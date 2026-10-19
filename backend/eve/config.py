@@ -6,14 +6,19 @@ the environment so it never lands in a settings dump or log line.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Ensure .env is loaded into os.environ for all subprocesses, LLM SDKs, and pydantic settings
+dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -131,6 +136,11 @@ class Settings(BaseSettings):
         return self.data_dir / "eve.db"
 
     @property
+    def api_token(self) -> str:
+        from eve.security import load_or_create_token
+        return load_or_create_token(self.data_dir)
+
+    @property
     def recordings_dir(self) -> Path:
         return self.data_dir / "recordings"
 
@@ -141,15 +151,19 @@ class Settings(BaseSettings):
 
     @property
     def resolved_gemini_api_key(self) -> str | None:
-        import os
-
-        return self.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+        return (
+            self.gemini_api_key
+            or os.environ.get("EVE_GEMINI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+        )
 
     @property
     def resolved_groq_api_key(self) -> str | None:
-        import os
-
-        return self.groq_api_key or os.environ.get("GROQ_API_KEY")
+        return (
+            self.groq_api_key
+            or os.environ.get("EVE_GROQ_API_KEY")
+            or os.environ.get("GROQ_API_KEY")
+        )
 
     @property
     def lectures_dir(self) -> Path:

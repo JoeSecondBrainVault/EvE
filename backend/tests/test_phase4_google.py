@@ -25,12 +25,18 @@ from eve.models import Course, Task
 
 
 def test_keyring_token_storage():
-    test_token = "test_refresh_token_abc_123"
-    save_refresh_token(test_token)
-    assert load_refresh_token() == test_token
+    with patch("eve.integrations.google.keyring") as mock_keyring:
+        store = {}
+        mock_keyring.set_password.side_effect = lambda s, u, p: store.update({(s, u): p})
+        mock_keyring.get_password.side_effect = lambda s, u: store.get((s, u))
+        mock_keyring.delete_password.side_effect = lambda s, u: store.pop((s, u), None)
 
-    clear_refresh_token()
-    assert load_refresh_token() is None
+        test_token = "test_refresh_token_abc_123"
+        save_refresh_token(test_token)
+        assert load_refresh_token() == test_token
+
+        clear_refresh_token()
+        assert load_refresh_token() is None
 
 
 def test_google_auth_manager_unconfigured(tmp_path):

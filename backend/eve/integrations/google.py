@@ -8,8 +8,8 @@ Calendar constraint: Writes strictly to a dedicated 'E.V.E.' secondary calendar.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import keyring
@@ -31,13 +31,30 @@ KEYRING_REFRESH_TOKEN_KEY = "google_refresh_token"
 
 CLASSROOM_COURSES_READONLY = "https://www.googleapis.com/auth/classroom.courses.readonly"
 CLASSROOM_COURSEWORK_READONLY = "https://www.googleapis.com/auth/classroom.coursework.me.readonly"
-CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+# calendar.app.created = create secondary calendars + manage events ONLY on calendars E.V.E. created.
+CALENDAR_APP_CREATED = "https://www.googleapis.com/auth/calendar.app.created"
+CALENDAR_LIST_READONLY = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+DOCS_READONLY = "https://www.googleapis.com/auth/documents.readonly"
+DRIVE_METADATA_READONLY = "https://www.googleapis.com/auth/drive.metadata.readonly"
+DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+MEET_SPACE_CREATED = "https://www.googleapis.com/auth/meetings.space.created"
+IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
 
-SCOPES = [
-    CLASSROOM_COURSES_READONLY,
-    CLASSROOM_COURSEWORK_READONLY,
-    CALENDAR_EVENTS,
-]
+# Each classroom app asks Google only for the permissions it needs (incremental authorization).
+APP_SCOPES: dict[str, list[str]] = {
+    "classroom": [CLASSROOM_COURSES_READONLY, CLASSROOM_COURSEWORK_READONLY],
+    "calendar": [CALENDAR_APP_CREATED, CALENDAR_LIST_READONLY],
+    "docs": [DOCS_READONLY, DRIVE_METADATA_READONLY],
+    "drive": [DRIVE_READONLY],
+    "meet": [MEET_SPACE_CREATED],
+}
+
+SCOPES = [s for scopes in APP_SCOPES.values() for s in scopes]
+
+# Google may return previously-granted scopes alongside new ones (include_granted_scopes).
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
+_creds_cache: dict[str, Any] = {"creds": None, "refresh_token": None}
 
 
 def load_refresh_token() -> str | None:
@@ -80,15 +97,20 @@ class GoogleAuthManager:
         secrets_file = self.settings.google_client_secrets_file or (self.settings.data_dir / "client_secret.json")
         return secrets_file.exists()
 
-    def get_flow(self, redirect_uri: str) -> Flow:
-        """Create OAuth flow from client secret file or config settings."""
+    def get_flow(self, redirect_uri: str, scopes: list[str] | None = None, code_verifier: str | None = None) -> Flow:
+        """Create OAuth flow from client secret file or config settings.
+
+        ``code_verifier`` must be passed back in on the callback: google-auth-oauthlib
+        auto-generates a PKCE verifier when building the login URL, and Google rejects
+        the code exchange unless the exact same verifier is presented.
+        """
+        scopes = scopes or SCOPES
+        kwargs: dict[str, Any] = {"scopes": scopes, "redirect_uri": redirect_uri}
+        if code_verifier:
+            kwargs["code_verifier"] = code_verifier
         secrets_file = self.settings.google_client_secrets_file or (self.settings.data_dir / "client_secret.json")
         if secrets_file.exists():
-            return Flow.from_client_secrets_file(
-                str(secrets_file),
-                scopes=SCOPES,
-                redirect_uri=redirect_uri,
-            )
+            return Flow.from_client_secrets_file(str(secrets_file), **kwargs)
 
         if self.settings.google_client_id and self.settings.google_client_secret:
             client_config = {
@@ -99,23 +121,13 @@ class GoogleAuthManager:
                     "token_uri": "https://oauth2.googleapis.com/token",
                 }
             }
-            return Flow.from_client_config(
-                client_config,
-                scopes=SCOPES,
-                redirect_uri=redirect_uri,
-            )
+            return Flow.from_client_config(client_config, **kwargs)
 
         raise ValueError("Google OAuth credentials not configured. Please supply client_secret.json or client ID/secret.")
 
-    def get_credentials(self) -> Credentials | None:
-        """Get valid Credentials using the stored refresh token in Windows Credential Manager."""
-        refresh_token = load_refresh_token()
-        if not refresh_token:
-            return None
-
+    def _client_id_secret(self) -> tuple[str | None, str | None]:
         client_id = self.settings.google_client_id
         client_secret = self.settings.google_client_secret
-
         secrets_file = self.settings.google_client_secrets_file or (self.settings.data_dir / "client_secret.json")
         if secrets_file.exists() and (not client_id or not client_secret):
             import json
@@ -127,25 +139,71 @@ class GoogleAuthManager:
                 client_secret = client_secret or info.get("client_secret")
             except Exception as exc:  # noqa: BLE001
                 log.warning("Failed parsing client secrets file: %s", exc)
+        return client_id, client_secret
 
+    def get_credentials(self) -> Credentials | None:
+        """Get valid Credentials using the stored refresh token in Windows Credential Manager."""
+        refresh_token = load_refresh_token()
+        if not refresh_token:
+            _creds_cache.update(creds=None, refresh_token=None)
+            return None
+
+        cached = _creds_cache.get("creds")
+        if cached is not None and _creds_cache.get("refresh_token") == refresh_token and cached.valid:
+            return cached
+
+        client_id, client_secret = self._client_id_secret()
         if not client_id or not client_secret:
             return None
 
+        # No explicit scopes: the refresh returns whatever the user actually granted.
+        # Requesting scopes the user never approved would make Google reject the refresh.
         creds = Credentials(
             token=None,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
             client_id=client_id,
             client_secret=client_secret,
-            scopes=SCOPES,
         )
 
         try:
             creds.refresh(Request())
+            _creds_cache.update(creds=creds, refresh_token=refresh_token)
             return creds
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed refreshing Google OAuth token: %s", exc)
             return None
+
+    def granted_info(self, creds: Credentials) -> dict[str, Any]:
+        """Ask Google which scopes this token really holds (and the account email)."""
+        import requests
+
+        try:
+            resp = requests.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": creds.token},
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                return {"scopes": [], "email": None}
+            data = resp.json()
+            return {"scopes": data.get("scope", "").split(), "email": data.get("email")}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Google tokeninfo lookup failed: %s", exc)
+            return {"scopes": [], "email": None}
+
+    def revoke(self) -> None:
+        """Revoke the grant at Google (not just locally) and clear the stored token."""
+        import requests
+
+        token = load_refresh_token()
+        if token:
+            try:
+                requests.post("https://oauth2.googleapis.com/revoke", params={"token": token}, timeout=5)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Google token revocation request failed: %s", exc)
+        clear_refresh_token()
+        _creds_cache.update(creds=None, refresh_token=None)
 
 
 class GoogleIntegrationService:
@@ -324,4 +382,54 @@ class GoogleIntegrationService:
             }
         except Exception as exc:  # noqa: BLE001
             log.exception("Google Calendar sync failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+    # ---------------------------------------------------------------- Docs / Drive / Meet
+    def list_recent_docs(self, creds: Credentials, limit: int = 10) -> dict[str, Any]:
+        """List the student's most recently modified Google Docs (metadata only)."""
+        try:
+            drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+            resp = drive.files().list(
+                q="mimeType='application/vnd.google-apps.document' and trashed=false",
+                orderBy="modifiedTime desc",
+                pageSize=limit,
+                fields="files(id,name,modifiedTime,webViewLink)",
+            ).execute()
+            return {"status": "ok", "files": resp.get("files", [])}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Google Docs listing failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+    def list_recent_drive_files(self, creds: Credentials, limit: int = 10) -> dict[str, Any]:
+        """List the student's most recently modified Drive files (read-only)."""
+        try:
+            drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+            resp = drive.files().list(
+                q="trashed=false",
+                orderBy="modifiedTime desc",
+                pageSize=limit,
+                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+            ).execute()
+            return {"status": "ok", "files": resp.get("files", [])}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Google Drive listing failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+    def create_meet_space(self, creds: Credentials) -> dict[str, Any]:
+        """Create a new Google Meet meeting space via the Meet REST API v2."""
+        from google.auth.transport.requests import AuthorizedSession
+
+        try:
+            session = AuthorizedSession(creds)
+            resp = session.post("https://meet.googleapis.com/v2/spaces", json={}, timeout=10)
+            if resp.status_code >= 400:
+                return {"status": "error", "message": f"Google Meet API error {resp.status_code}: {resp.text[:300]}"}
+            data = resp.json()
+            return {
+                "status": "ok",
+                "meeting_uri": data.get("meetingUri"),
+                "meeting_code": data.get("meetingCode"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Google Meet space creation failed: %s", exc)
             return {"status": "error", "message": str(exc)}

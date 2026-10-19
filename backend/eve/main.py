@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession
 from sqlmodel import col, select
@@ -26,6 +26,7 @@ from eve.config import Settings, get_settings
 from eve.db import make_engine
 from eve.events import EventBus
 from eve.models import Course, Flashcard, Note, QuizItem, Segment, Session, Task
+from eve.mcp.models import MCPServerConfig
 from eve.security import (
     LocalOnlyMiddleware,
     load_or_create_token,
@@ -90,6 +91,7 @@ class StartSessionIn(BaseModel):
 
 class SessionOut(BaseModel):
     id: int
+    session_id: int | None = None
     title: str
     course: str | None
     status: str
@@ -211,6 +213,15 @@ class GoogleExchangeIn(BaseModel):
     redirect_uri: str
 
 
+class GoogleConnectIn(BaseModel):
+    app: str = Field(pattern=r"^(classroom|calendar|docs|drive|meet)$")
+
+
+class GoogleClientSecretIn(BaseModel):
+    content: str = Field(min_length=20, max_length=20000)
+
+
+
 class VoiceInteractIn(BaseModel):
     input: str = Field(min_length=1, max_length=1000)
     synthesize_audio: bool = True
@@ -269,7 +280,7 @@ def _mask_key(key: str | None) -> str | None:
 
 
 def _session_out(row: Session, course_name: str | None) -> dict[str, Any]:
-    return {"id": row.id, "title": row.title, "course": course_name, "status": row.status,
+    return {"id": row.id, "session_id": row.id, "title": row.title, "course": course_name, "status": row.status,
             "started_at": row.started_at, "ended_at": row.ended_at}
 
 
@@ -407,7 +418,7 @@ def create_app(settings: Settings | None = None, components: Components | None =
             try:
                 tray = SystemTray(
                     settings=settings,
-                    on_start_session=lambda: app.state.manager.start("Tray Session", consent_confirmed=True),
+                    on_start_session=lambda: app.state.manager.start(title="Tray Session", course=None, consent_confirmed=True),
                     on_stop_session=lambda: app.state.manager.stop(),
                 )
                 tray.run_detached()
@@ -458,9 +469,25 @@ def create_app(settings: Settings | None = None, components: Components | None =
                     detail="Rate limit exceeded. Please wait a moment before sending more requests.",
                 )
 
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        origin = request.headers.get("origin")
+        headers = {}
+        if origin and origin in settings.allowed_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+        log.exception("Unhandled server exception on %s: %s", request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc)},
+            headers=headers,
+        )
+
     @app.get("/")
     def root() -> RedirectResponse:
-        return RedirectResponse(url="http://localhost:3001")
+        from eve.app import is_service_ready
+        port = 3001 if is_service_ready("http://localhost:3001") else 3000
+        return RedirectResponse(url=f"http://localhost:{port}?token={settings.api_token}")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -503,6 +530,7 @@ def create_app(settings: Settings | None = None, components: Components | None =
     def list_sessions(db: DBSession = Depends(get_db), limit: int = Query(default=50, ge=1, le=200)) -> list[dict[str, Any]]:
         rows = db.exec(
             select(Session, Course).join(Course, isouter=True)
+            .where(Session.status != "failed")
             .order_by(col(Session.started_at).desc()).limit(limit)
         ).all()
         return [_session_out(s, c.name if c else None) for s, c in rows]
@@ -627,7 +655,12 @@ def create_app(settings: Settings | None = None, components: Components | None =
         return ans.model_dump()
 
     @app.get("/api/chat/search", dependencies=auth, response_model=list[ChunkSearchOut])
-    def rag_search(request: Request, q: str = Query(min_length=1), course: str | None = None, top_k: int = 5) -> list[dict[str, Any]]:
+    def rag_search(
+        request: Request,
+        q: str = Query(min_length=1),
+        course: str | None = None,
+        top_k: int = Query(default=5, ge=1, le=50),
+    ) -> list[dict[str, Any]]:
         from eve.rag.embeddings import EmbeddingEngine
         from eve.rag.chat import HybridRAGSearcher
 
@@ -646,13 +679,26 @@ def create_app(settings: Settings | None = None, components: Components | None =
         return {"status": "ok", "session_id": session_id, "chunks_indexed": count}
 
     @app.get("/api/sessions/{session_id}/audio/{source}", dependencies=auth)
-    def stream_session_audio(session_id: int, source: str) -> FileResponse:
+    def stream_session_audio(session_id: int, source: str, db: DBSession = Depends(get_db)) -> FileResponse:
         if source not in ("them", "me"):
             raise HTTPException(status_code=400, detail="Source must be 'them' or 'me'")
-        matching = list(settings.recordings_dir.glob(f"*-{session_id}-*"))
-        if not matching:
+        session_row = db.get(Session, session_id)
+        rec_dir: Path | None = None
+        if session_row and session_row.recording_dir:
+            p = Path(session_row.recording_dir)
+            if p.exists() and p.is_dir():
+                rec_dir = p
+        if rec_dir is None:
+            import re
+            pattern = re.compile(rf"^\d{{8}}-\d{{6}}-{session_id}-")
+            if settings.recordings_dir.exists():
+                for d in settings.recordings_dir.iterdir():
+                    if d.is_dir() and pattern.match(d.name):
+                        rec_dir = d
+                        break
+        if rec_dir is None:
             raise HTTPException(status_code=404, detail=f"Recording for session #{session_id} not found")
-        wav_file = matching[0] / f"{source}.wav"
+        wav_file = rec_dir / f"{source}.wav"
         if not wav_file.exists():
             raise HTTPException(status_code=404, detail=f"Audio file {source}.wav not found for session #{session_id}")
         return FileResponse(wav_file, media_type="audio/wav")
@@ -662,7 +708,7 @@ def create_app(settings: Settings | None = None, components: Components | None =
     def get_stats(db: DBSession = Depends(get_db)) -> dict[str, Any]:
         from sqlmodel import func
 
-        total_sessions = db.exec(select(func.count(Session.id))).one() or 0
+        total_sessions = db.exec(select(func.count(Session.id)).where(Session.status != "failed")).one() or 0
         total_segments = db.exec(select(func.count(Segment.id))).one() or 0
         total_tasks = db.exec(select(func.count(Task.id))).one() or 0
         pending_tasks = db.exec(select(func.count(Task.id)).where(Task.status.in_(["inbox", "todo"]))).one() or 0
@@ -696,26 +742,166 @@ def create_app(settings: Settings | None = None, components: Components | None =
             "calendar_name": settings.google_calendar_name,
         }
 
-    @app.get("/api/integrations/google/auth-url", dependencies=auth)
-    def google_auth_url(redirect_uri: str = "http://127.0.0.1:8765/api/integrations/google/callback") -> dict[str, str]:
-        from eve.integrations.google import GoogleAuthManager
+    # Pending OAuth logins: state -> PKCE verifier + requested scopes (expires after 10 minutes).
+    oauth_pending: dict[str, dict[str, Any]] = {}
+    granted_cache: dict[str, Any] = {"token": None, "info": None}
+    google_redirect = f"http://127.0.0.1:{settings.port}/api/integrations/google/callback"
+
+    def _begin_google_flow(scopes: list[str], redirect_uri: str = google_redirect) -> tuple[str, str]:
+        import secrets
+        import time
+
+        from eve.integrations.google import IDENTITY_SCOPES, GoogleAuthManager
 
         mgr = GoogleAuthManager(settings)
-        flow = mgr.get_flow(redirect_uri)
+        requested = list(dict.fromkeys(IDENTITY_SCOPES + scopes))
+        try:
+            flow = mgr.get_flow(redirect_uri, scopes=requested)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state = secrets.token_urlsafe(32)
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
             prompt="consent",
+            state=state,
         )
-        return {"auth_url": auth_url}
+        now = time.monotonic()
+        for stale in [k for k, v in oauth_pending.items() if now - v["created"] > 600]:
+            oauth_pending.pop(stale, None)
+        oauth_pending[state] = {
+            "verifier": flow.code_verifier,
+            "scopes": requested,
+            "redirect_uri": redirect_uri,
+            "created": now,
+        }
+        return auth_url, state
+
+    def _granted(mgr: Any, creds: Any) -> dict[str, Any]:
+        if granted_cache["token"] != creds.token or granted_cache["info"] is None:
+            granted_cache["info"] = mgr.granted_info(creds)
+            granted_cache["token"] = creds.token
+        return granted_cache["info"]
+
+    @app.get("/api/integrations/google/auth-url", dependencies=auth)
+    def google_auth_url(redirect_uri: str = google_redirect) -> dict[str, str]:
+        from eve.integrations.google import SCOPES
+
+        if redirect_uri != google_redirect:
+            raise HTTPException(status_code=400, detail="Only the local E.V.E. callback redirect URI is allowed.")
+        auth_url, state = _begin_google_flow(SCOPES, redirect_uri)
+        return {"auth_url": auth_url, "state": state}
+
+    @app.get("/api/integrations/google/apps", dependencies=auth)
+    def google_apps() -> dict[str, Any]:
+        """Real connection state per classroom app, based on scopes Google actually granted."""
+        from eve.integrations.google import APP_SCOPES, GoogleAuthManager
+
+        mgr = GoogleAuthManager(settings)
+        configured = mgr.has_credentials_configured()
+        creds = mgr.get_credentials() if configured else None
+        info = _granted(mgr, creds) if creds else {"scopes": [], "email": None}
+        granted = set(info["scopes"])
+        apps = {
+            name: {"connected": creds is not None and all(s in granted for s in scopes), "scopes": scopes}
+            for name, scopes in APP_SCOPES.items()
+        }
+        return {
+            "configured": configured,
+            "authenticated": creds is not None,
+            "email": info.get("email"),
+            "apps": apps,
+        }
+
+    @app.post("/api/integrations/google/connect", dependencies=auth)
+    def google_connect(body: GoogleConnectIn, request: Request) -> dict[str, str]:
+        """Start Google sign-in + permission consent for one app in the system browser.
+
+        Google blocks sign-in inside embedded webviews, so the consent page is opened in the
+        user's real default browser; the dashboard polls /apps until the grant lands.
+        """
+        import webbrowser
+
+        from eve.integrations.google import APP_SCOPES
+
+        check_rate_limit(request)
+        auth_url, _ = _begin_google_flow(APP_SCOPES[body.app])
+        opened = False
+        try:
+            opened = webbrowser.open(auth_url, new=2)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not open system browser for Google sign-in: %s", exc)
+        return {"auth_url": auth_url, "opened": "true" if opened else "false"}
+
+    @app.post("/api/integrations/google/apps/{app_name}/action", dependencies=auth)
+    def google_app_action(app_name: str, request: Request) -> dict[str, Any]:
+        """Run the app's real Google API action to prove the connection works."""
+        from eve.integrations.google import APP_SCOPES, GoogleAuthManager, GoogleIntegrationService
+
+        check_rate_limit(request)
+        if app_name not in APP_SCOPES:
+            raise HTTPException(status_code=404, detail="Unknown Google app.")
+        mgr = GoogleAuthManager(settings)
+        creds = mgr.get_credentials()
+        if not creds:
+            raise HTTPException(status_code=401, detail="Google account not connected.")
+        granted = set(_granted(mgr, creds)["scopes"])
+        if not all(s in granted for s in APP_SCOPES[app_name]):
+            raise HTTPException(status_code=403, detail=f"Permission for {app_name} has not been granted yet.")
+
+        service = GoogleIntegrationService(request.app.state.engine, settings, mgr)
+        if app_name == "classroom":
+            return service.sync_classroom(creds)
+        if app_name == "calendar":
+            return service.sync_calendar(creds)
+        if app_name == "docs":
+            return service.list_recent_docs(creds)
+        if app_name == "drive":
+            return service.list_recent_drive_files(creds)
+        return service.create_meet_space(creds)
+
+    @app.post("/api/integrations/google/client-secret", dependencies=auth)
+    def google_client_secret(body: GoogleClientSecretIn, request: Request) -> dict[str, str]:
+        """Save the OAuth client JSON downloaded from Google Cloud Console (Desktop app type)."""
+        check_rate_limit(request)
+        try:
+            data = json.loads(body.content)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="That is not valid JSON.") from exc
+        info = data.get("installed") if isinstance(data, dict) else None
+        if not isinstance(info, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Expected a 'Desktop app' OAuth client JSON (top-level key 'installed').",
+            )
+        cid, csec = info.get("client_id"), info.get("client_secret")
+        if not (isinstance(cid, str) and cid.endswith(".apps.googleusercontent.com") and isinstance(csec, str) and csec):
+            raise HTTPException(status_code=400, detail="client_id / client_secret missing or malformed.")
+        target = settings.google_client_secrets_file or (settings.data_dir / "client_secret.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data), encoding="utf-8")
+        return {"status": "ok", "message": "Google OAuth client saved. You can now connect your apps."}
 
     @app.post("/api/integrations/google/exchange", dependencies=auth)
     def google_exchange(body: GoogleExchangeIn) -> dict[str, Any]:
         from eve.integrations.google import GoogleAuthManager, save_refresh_token
 
+        pending = next(
+            (v for v in sorted(oauth_pending.values(), key=lambda v: v["created"], reverse=True)
+             if v["redirect_uri"] == body.redirect_uri),
+            None,
+        )
+        if pending is None:
+            raise HTTPException(status_code=400, detail="No pending Google sign-in for this redirect URI.")
         mgr = GoogleAuthManager(settings)
-        flow = mgr.get_flow(body.redirect_uri)
-        flow.fetch_token(code=body.code)
+        try:
+            flow = mgr.get_flow(body.redirect_uri, scopes=pending["scopes"], code_verifier=pending["verifier"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            flow.fetch_token(code=body.code)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch token from Google: {exc}") from exc
         creds = flow.credentials
         if not creds.refresh_token:
             raise HTTPException(status_code=400, detail="No refresh token returned by Google OAuth. Ensure prompt='consent' was used.")
@@ -743,32 +929,78 @@ def create_app(settings: Settings | None = None, components: Components | None =
 
     @app.post("/api/integrations/google/disconnect", dependencies=auth)
     def google_disconnect() -> dict[str, str]:
-        from eve.integrations.google import clear_refresh_token
+        from eve.integrations.google import GoogleAuthManager
 
-        clear_refresh_token()
-        return {"status": "ok", "message": "Google refresh token cleared from Windows Credential Manager."}
+        GoogleAuthManager(settings).revoke()
+        granted_cache.update(token=None, info=None)
+        return {"status": "ok", "message": "Google access revoked and token cleared from Windows Credential Manager."}
+
+    def _oauth_page(title: str, message: str, ok: bool) -> HTMLResponse:
+        import html
+
+        color = "#34d399" if ok else "#fb7185"
+        body = (
+            "<!doctype html><html><head><meta charset='utf-8'><title>E.V.E. - Google</title></head>"
+            "<body style='background:#020617;color:#e2e8f0;font-family:system-ui;display:flex;"
+            "align-items:center;justify-content:center;height:100vh;margin:0'>"
+            "<div style='max-width:460px;text-align:center;padding:32px;border:1px solid #1e293b;"
+            "border-radius:16px;background:#0f172a'>"
+            f"<h1 style='color:{color};font-size:22px'>{html.escape(title)}</h1>"
+            f"<p style='color:#94a3b8;font-size:14px;line-height:1.6'>{html.escape(message)}</p>"
+            "</div></body></html>"
+        )
+        return HTMLResponse(content=body, status_code=200 if ok else 400)
 
     @app.get("/api/integrations/google/callback")
-    def google_callback(code: str = Query(...)) -> Response:
+    def google_callback(
+        request: Request,
+        code: str | None = Query(default=None),
+        state: str | None = Query(default=None),
+        error: str | None = Query(default=None),
+    ) -> Response:
+        import sys
+
         from eve.integrations.google import GoogleAuthManager, save_refresh_token
 
-        mgr = GoogleAuthManager(settings)
-        flow = mgr.get_flow("http://127.0.0.1:8765/api/integrations/google/callback")
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        if creds.refresh_token:
-            save_refresh_token(creds.refresh_token)
-            from eve.mcp.models import MCPServerConfig
-
-            ws_cfg = MCPServerConfig(
-                name="google_workspace",
-                command="python",
-                args=["-m", "eve.mcp.servers.workspace"],
-                enabled=True,
-                description="Google Classroom, Gmail, Calendar MCP tools",
+        pending = oauth_pending.pop(state, None) if state else None
+        if error:
+            return _oauth_page("Permission not granted", f"Google returned: {error}. You can close this tab.", ok=False)
+        if pending is None or not code:
+            log.warning("Google OAuth callback with unknown/expired state")
+            return _oauth_page(
+                "Sign-in link expired",
+                "This sign-in request is unknown or expired. Return to E.V.E. and click Connect again.",
+                ok=False,
             )
-            app.state.mcp.save_server(ws_cfg)
-        return RedirectResponse(url="http://localhost:3001/settings?google=connected")
+
+        mgr = GoogleAuthManager(settings)
+        try:
+            flow = mgr.get_flow(pending["redirect_uri"], scopes=pending["scopes"], code_verifier=pending["verifier"])
+            flow.fetch_token(code=code)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Google OAuth code exchange failed: %s", exc)
+            return _oauth_page("Connection failed", "Google rejected the sign-in. Please try Connect again.", ok=False)
+
+        creds = flow.credentials
+        if not creds.refresh_token:
+            return _oauth_page("Connection failed", "Google did not return a refresh token. Please try again.", ok=False)
+        save_refresh_token(creds.refresh_token)
+        granted_cache.update(token=None, info=None)
+
+        ws_cfg = MCPServerConfig(
+            name="google_workspace",
+            command=sys.executable,
+            args=["-m", "eve.mcp.servers.workspace"],
+            enabled=True,
+            description="Google Classroom, Calendar MCP tools",
+        )
+        with contextlib.suppress(Exception):
+            request.app.state.mcp.save_server(ws_cfg)
+        return _oauth_page(
+            "Connected to E.V.E.",
+            "Permission granted. You can close this tab and return to E.V.E. - your app now shows as Connected.",
+            ok=True,
+        )
 
     # ---------------------------------------------------------------- Settings & API Keys Management
     @app.get("/api/settings/keys", dependencies=auth)
@@ -814,7 +1046,9 @@ def create_app(settings: Settings | None = None, components: Components | None =
             val = body.groq_api_key.strip()
             if val:
                 dotenv.set_key(str(env_path), "GROQ_API_KEY", val)
+                dotenv.set_key(str(env_path), "EVE_GROQ_API_KEY", val)
                 os.environ["GROQ_API_KEY"] = val
+                os.environ["EVE_GROQ_API_KEY"] = val
                 settings.groq_api_key = val
                 updated_items.append("Groq")
 
@@ -822,7 +1056,9 @@ def create_app(settings: Settings | None = None, components: Components | None =
             val = body.gemini_api_key.strip()
             if val:
                 dotenv.set_key(str(env_path), "GEMINI_API_KEY", val)
+                dotenv.set_key(str(env_path), "EVE_GEMINI_API_KEY", val)
                 os.environ["GEMINI_API_KEY"] = val
+                os.environ["EVE_GEMINI_API_KEY"] = val
                 settings.gemini_api_key = val
                 updated_items.append("Gemini")
 
@@ -971,6 +1207,7 @@ def create_app(settings: Settings | None = None, components: Components | None =
             try:
                 session = request.app.state.manager.start(
                     title=f"Google Meet ({res.get('email', 'Class')})",
+                    course=None,
                     consent_confirmed=True,
                 )
                 res["session_id"] = session.id
@@ -991,12 +1228,37 @@ def create_app(settings: Settings | None = None, components: Components | None =
         return {"servers": servers}
 
     @app.post("/api/mcp/servers", dependencies=auth)
-    def save_mcp_server(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    def save_mcp_server(body: MCPServerConfig, request: Request) -> dict[str, Any]:
         check_rate_limit(request)
-        from eve.mcp.models import MCPServerConfig
+        import sys
+        from pathlib import Path
 
-        cfg = MCPServerConfig(**body)
-        success = request.app.state.mcp.save_server(cfg)
+        cmd_path = Path(body.command)
+        cmd_name = cmd_path.name.lower()
+        if cmd_name.endswith((".exe", ".cmd", ".bat")):
+            base_cmd = cmd_name.rsplit(".", 1)[0]
+        else:
+            base_cmd = cmd_name
+
+        allowed_binaries = {"python", "python3", "node", "npx", "uv", "uvx"}
+        is_allowed = False
+        if base_cmd in allowed_binaries:
+            is_allowed = True
+        else:
+            try:
+                resolved_cmd = cmd_path.resolve()
+                if resolved_cmd == Path(sys.executable).resolve() or resolved_cmd.is_relative_to(Path(sys.prefix).resolve()):
+                    is_allowed = True
+            except Exception:
+                is_allowed = False
+
+        if not is_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Disallowed command runtime: {body.command}. Allowed runtimes: python, node, npx, uv, uvx.",
+            )
+
+        success = request.app.state.mcp.save_server(body)
         return {"status": "ok" if success else "error"}
 
     @app.get("/api/mcp/tools", dependencies=auth)

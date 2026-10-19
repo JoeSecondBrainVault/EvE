@@ -25,6 +25,7 @@ import {
 import { 
   getLiveWebSocketUrl, 
   getStoredToken, 
+  ensureToken,
   getStatus, 
   stopSession, 
   processSession, 
@@ -91,9 +92,9 @@ export default function LiveCaptionsPage() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       setWsConnected(true);
-      const token = getStoredToken();
+      const token = await ensureToken();
       ws.send(JSON.stringify({ type: "auth", token }));
     };
 
@@ -134,9 +135,10 @@ export default function LiveCaptionsPage() {
     setStopping(true);
     try {
       const res = await stopSession();
-      if (res.session_id) {
-        await processSession(res.session_id);
-        router.push(`/lectures/${res.session_id}`);
+      const sid = res.id ?? res.session_id;
+      if (sid) {
+        await processSession(sid);
+        router.push(`/lectures/${sid}`);
       } else {
         router.push("/lectures");
       }

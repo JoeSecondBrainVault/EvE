@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -93,10 +91,17 @@ def resolve_chrome_profile(email_or_name: str | None) -> dict[str, str] | None:
 
 
 def normalize_meet_url(url_or_code: str) -> str:
-    """Formats an input code or URL into a valid Google Meet link."""
+    """Formats an input code or URL into a valid Google Meet link, restricting to meet.google.com."""
     clean = url_or_code.strip()
     if clean.startswith("http://") or clean.startswith("https://"):
-        return clean
+        from urllib.parse import urlparse
+
+        parsed = urlparse(clean)
+        netloc = parsed.netloc.lower()
+        if netloc not in ("meet.google.com", "www.meet.google.com"):
+            raise ValueError(f"Security restriction: URL '{clean}' is not on meet.google.com")
+        code = parsed.path.strip("/")
+        return f"https://meet.google.com/{code}"
 
     # e.g. "abc-defg-hij" or "meet.google.com/abc-defg-hij"
     clean = clean.replace("meet.google.com/", "").replace("/", "").strip()

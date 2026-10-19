@@ -90,7 +90,7 @@ class SessionManager:
         return active.session_id if active else None
 
     # ------------------------------------------------------------------ lifecycle
-    def start(self, *, title: str, course: str | None, consent_confirmed: bool) -> Session:
+    def start(self, *, title: str, course: str | None = None, consent_confirmed: bool = True) -> Session:
         if not consent_confirmed:
             raise SessionError("Recording requires confirming that participants are informed.")
         stt = self._stt()
@@ -148,7 +148,11 @@ class SessionManager:
                 active.worker.join(timeout=5)
                 for rec in active.recorders.values():
                     rec.close()
-                self._mark(row.id, status="failed")
+                with DBSession(self._engine) as db:
+                    failed_row = db.get(Session, row.id)
+                    if failed_row:
+                        db.delete(failed_row)
+                        db.commit()
                 raise SessionError(f"Could not open audio devices: {exc}") from exc
 
             with DBSession(self._engine) as db:

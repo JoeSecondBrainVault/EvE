@@ -156,8 +156,15 @@ class LLMRouter:
                 raw_response = data.get("response", "{}")
                 return schema.model_validate_json(raw_response)
         except Exception as exc:
+            providers = []
+            if self._groq_client:
+                providers.append("Groq")
+            if self._gemini_client:
+                providers.append("Gemini")
+            providers.append(f"local Ollama ({self.settings.ollama_model})")
+            prov_str = " and ".join([", ".join(providers[:-1]), providers[-1]] if len(providers) > 1 else providers)
             raise RuntimeError(
-                f"Both Gemini and local Ollama ({self.settings.ollama_model}) failed to process request: {exc}"
+                f"Configured LLM providers ({prov_str}) failed or are unavailable: {exc}"
             ) from exc
 
     def transcribe_audio_cloud(self, audio_path: Path, prompt_hint: str = "") -> str | None:

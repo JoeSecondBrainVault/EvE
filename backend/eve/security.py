@@ -39,10 +39,18 @@ def token_matches(expected: str, provided: str | None) -> bool:
 
 
 def require_token(request: Request) -> None:
-    """FastAPI dependency: enforce ``Authorization: Bearer <token>``."""
+    """FastAPI dependency: enforce ``Authorization: Bearer <token>`` or ?token=<token> for audio playback."""
+    provided: str | None = None
     header = request.headers.get("authorization", "")
-    scheme, _, provided = header.partition(" ")
-    if scheme.lower() != "bearer" or not token_matches(request.app.state.api_token, provided.strip()):
+    if header:
+        scheme, _, bearer_val = header.partition(" ")
+        if scheme.lower() == "bearer":
+            provided = bearer_val.strip()
+    if not provided:
+        # Fallback to query param (e.g. for HTML5 audio streaming where custom headers cannot be set)
+        provided = request.query_params.get("token")
+
+    if not provided or not token_matches(request.app.state.api_token, provided):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API token",

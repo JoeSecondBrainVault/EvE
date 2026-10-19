@@ -20,10 +20,18 @@ export default function LecturesPage() {
   const [search, setSearch] = useState("");
   const [filterCourse, setFilterCourse] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     getSessions()
-      .then(setSessions)
+      .then((data) => {
+        setSessions(data);
+        setError(null);
+      })
+      .catch((err) => {
+        setError(err.message || "Failed to load lectures");
+        setSessions([]);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -86,7 +94,21 @@ export default function LecturesPage() {
       </div>
 
       {/* Lectures List */}
-      {loading ? (
+      {error ? (
+        <div className="text-center py-16 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <AlertCircle className="w-10 h-10 text-amber-400 mx-auto" />
+          <p className="text-sm font-semibold text-slate-200">Unable to load lectures</p>
+          <p className="text-xs text-slate-400 max-w-md mx-auto">{error}</p>
+          <div className="pt-2">
+            <Link
+              href="/settings"
+              className="inline-block px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition-colors"
+            >
+              Configure API Token in Settings
+            </Link>
+          </div>
+        </div>
+      ) : loading ? (
         <div className="text-center py-12 text-xs text-slate-500">Loading lecture archives...</div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 rounded-2xl bg-slate-900 border border-slate-800">

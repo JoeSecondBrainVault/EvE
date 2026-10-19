@@ -85,9 +85,38 @@ def cmd_live(args: argparse.Namespace) -> None:
 
 def cmd_tray(_: argparse.Namespace) -> None:
     import time
+    import urllib.request
+    from eve.config import get_settings
+    from eve.security import load_or_create_token
     from eve.tray import SystemTray
 
-    tray = SystemTray()
+    s = get_settings()
+    token = load_or_create_token(s.data_dir)
+    api_url = f"http://{s.host}:{s.port}"
+
+    def _start():
+        try:
+            req = urllib.request.Request(
+                f"{api_url}/api/sessions/start",
+                data=b'{"title":"Tray Session","consent_confirmed":true}',
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=3.0)  # nosec B310
+        except Exception as exc:
+            print("Failed to start session from tray:", exc)
+
+    def _stop():
+        try:
+            req = urllib.request.Request(
+                f"{api_url}/api/sessions/stop",
+                data=b"{}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=3.0)  # nosec B310
+        except Exception as exc:
+            print("Failed to stop session from tray:", exc)
+
+    tray = SystemTray(on_start_session=_start, on_stop_session=_stop)
     tray.run_detached()
     print("E.V.E. System Tray active in notification area. Press Ctrl+C to exit.")
     try:

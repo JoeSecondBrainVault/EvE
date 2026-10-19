@@ -24,6 +24,7 @@ dist/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # --- E.V.E. runtime data (recordings, DB, API token, models) ---
 data/

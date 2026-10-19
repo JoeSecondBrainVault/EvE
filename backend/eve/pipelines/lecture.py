@@ -95,11 +95,16 @@ def process_session_pipeline(
 
     # 4. Save metadata, tasks, flashcards, and quiz items into database
     with DBSession(engine) as db:
-        # Save or update Note record
-        existing_note = db.exec(select(Note).where(Note.session_id == session_id)).first()
-        if existing_note:
-            db.delete(existing_note)
-            db.commit()
+        # Save or update Note record - clean up prior artifacts to prevent duplicates on re-processing
+        for existing in db.exec(select(Note).where(Note.session_id == session_id)).all():
+            db.delete(existing)
+        for existing in db.exec(select(Task).where(Task.session_id == session_id)).all():
+            db.delete(existing)
+        for existing in db.exec(select(Flashcard).where(Flashcard.session_id == session_id)).all():
+            db.delete(existing)
+        for existing in db.exec(select(QuizItem).where(QuizItem.session_id == session_id)).all():
+            db.delete(existing)
+        db.commit()
 
         note_row = Note(
             session_id=session_id,

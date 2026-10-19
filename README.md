@@ -40,7 +40,7 @@ List all audio hardware, default input microphones, and WASAPI loopback endpoint
 ### 4. Test Live Captions in Terminal
 Test real-time speech transcription right in your PowerShell console:
 ```powershell
-.\scripts\run.ps1 -Mode live --Title "Networking Lecture" --Course "IT 222"
+.\scripts\run.ps1 -Mode live -Title "Networking Lecture" -Course "IT 222"
 ```
 Play any video or lecture audio, or speak into your microphone. You will see real-time captions tagged with `THEM` (system loopback) or `ME` (microphone).
 

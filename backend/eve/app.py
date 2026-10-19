@@ -15,7 +15,6 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 from eve.config import PROJECT_ROOT, Settings, get_settings
 
@@ -24,9 +23,11 @@ logger = logging.getLogger(__name__)
 
 def is_service_ready(url: str, timeout: float = 1.0) -> bool:
     """Returns True if the HTTP endpoint responds with a 2xx or 3xx status code."""
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "EVE-App-Check"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             return 200 <= resp.status < 400
     except Exception:
         return False
@@ -94,6 +95,19 @@ def find_active_dashboard_port() -> int:
 
     # Neither port is listening: start Next.js production build on port 3001
     dash_dir = PROJECT_ROOT / "dashboard"
+    next_build_dir = dash_dir / ".next"
+    if not next_build_dir.exists():
+        logger.info("Next.js .next build not found; executing production build...")
+        try:
+            subprocess.run(
+                ["npm.cmd" if sys.platform == "win32" else "npm", "run", "build"],
+                cwd=str(dash_dir),
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+        except Exception as exc:
+            logger.warning("Next.js build attempt returned: %s; attempting npm start...", exc)
+
     logger.info("Launching Next.js Dashboard on port 3001...")
     try:
         subprocess.Popen(
@@ -128,12 +142,12 @@ def run_desktop_app(settings: Settings | None = None) -> None:
 
     # 2. Determine active dashboard URL
     port = find_active_dashboard_port()
-    dashboard_url = f"http://localhost:{port}"
+    dashboard_url = f"http://localhost:{port}?token={settings.api_token}"
 
     logger.info("Opening E.V.E. Desktop Application window at %s", dashboard_url)
 
     # 3. Create native desktop window
-    window = webview.create_window(
+    webview.create_window(
         title="E.V.E. — Extensible Virtual Entity",
         url=dashboard_url,
         width=1320,

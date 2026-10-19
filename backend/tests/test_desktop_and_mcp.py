@@ -209,13 +209,40 @@ def test_api_desktop_and_mcp_endpoints(tmp_path: Path) -> None:
         assert "groq" in resp_keys.json()
 
         with patch("dotenv.set_key"):
+            payload = {
+                "groq_api_key": "mock_groq_token",  # pragma: allowlist secret
+                "gemini_api_key": "mock_gemini_token",  # pragma: allowlist secret
+            }
             update_resp = client.post(
                 "/api/settings/keys",
-                json={"groq_api_key": "mock_test_groq_key_placeholder", "gemini_api_key": "mock_test_gemini_key_placeholder"},
+                json=payload,
                 headers=headers,
             )
             assert update_resp.status_code == 200
             assert update_resp.json()["status"] == "ok"
+
+        # 5. MCP Save validation (Bug 4 fix)
+        # Unsafe binary rejected with 400
+        unsafe_mcp = {"name": "malicious", "command": "cmd.exe", "args": ["/c", "calc.exe"]}
+        resp_unsafe = client.post("/api/mcp/servers", json=unsafe_mcp, headers=headers)
+        assert resp_unsafe.status_code == 400
+        assert "Disallowed command runtime" in resp_unsafe.json()["detail"]
+
+        # Missing required command field rejected with 422
+        resp_invalid = client.post("/api/mcp/servers", json={"name": "incomplete"}, headers=headers)
+        assert resp_invalid.status_code == 422
+
+        # Safe binary accepted with 200
+        safe_mcp = {"name": "safe_python", "command": "python", "args": ["-m", "eve.mcp.servers.workspace"], "enabled": False}
+        resp_safe = client.post("/api/mcp/servers", json=safe_mcp, headers=headers)
+        assert resp_safe.status_code == 200
+        assert resp_safe.json()["status"] == "ok"
+
+        # 6. Chat search top_k bounded validation (Bug 23 fix)
+        resp_too_high = client.get("/api/chat/search?q=test&top_k=99999", headers=headers)
+        assert resp_too_high.status_code == 422
+        resp_negative = client.get("/api/chat/search?q=test&top_k=-1", headers=headers)
+        assert resp_negative.status_code == 422
 
 
 def test_workspace_mcp_server_jsonrpc() -> None:

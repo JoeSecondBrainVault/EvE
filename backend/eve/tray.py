@@ -55,8 +55,19 @@ class SystemTray:
     ) -> None:
         self.settings = settings or get_settings()
         self.on_start_session = on_start_session
-        self.on_stop_session = on_stop_session
-        self.on_open_dashboard = on_open_dashboard or (lambda: webbrowser.open("http://localhost:3000"))
+        def _open_dashboard_auto():
+            import urllib.request
+            for port in (3001, 3000):
+                try:
+                    req = urllib.request.Request(f"http://localhost:{port}", headers={"User-Agent": "EVE-Check"})
+                    with urllib.request.urlopen(req, timeout=0.5):  # nosec B310
+                        webbrowser.open(f"http://localhost:{port}?token={self.settings.api_token}")
+                        return
+                except Exception:
+                    pass
+            webbrowser.open(f"http://localhost:3001?token={self.settings.api_token}")
+
+        self.on_open_dashboard = on_open_dashboard or _open_dashboard_auto
         self.on_sync_google = on_sync_google
         self.on_quit = on_quit
         self._state = "idle"

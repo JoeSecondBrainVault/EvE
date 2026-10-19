@@ -248,8 +248,8 @@ ${result.draft_overview}
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={loading}
-              className="flex items-center space-x-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+              disabled={loading || (mode === "file" ? !selectedFile : !promptText.trim())}
+              className="flex items-center space-x-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Sparkles className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
               <span>{loading ? "Grounding with Lectures & Outlining..." : "Analyze Coursework"}</span>

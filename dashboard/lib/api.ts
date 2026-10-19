@@ -6,9 +6,10 @@ export const API_BASE = "http://127.0.0.1:8765";
 
 export interface Session {
   id: number;
+  session_id?: number;
   title: string;
   course: string | null;
-  status: "recording" | "idle" | "processing" | "processed" | "error";
+  status: "recording" | "idle" | "processing" | "processed" | "error" | "stopped" | "failed";
   started_at: string;
   ended_at: string | null;
 }
@@ -115,6 +116,16 @@ export interface SystemStatus {
 
 export function getStoredToken(): string {
   if (typeof window === "undefined") return "";
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get("token");
+    if (urlToken && urlToken.trim()) {
+      localStorage.setItem("eve_api_token", urlToken.trim());
+      return urlToken.trim();
+    }
+  } catch {
+    // ignore
+  }
   return localStorage.getItem("eve_api_token") || "";
 }
 
@@ -124,8 +135,31 @@ export function setStoredToken(token: string): void {
   }
 }
 
+export async function ensureToken(): Promise<string> {
+  if (typeof window === "undefined") return "";
+  let token = getStoredToken();
+  if (!token) {
+    try {
+      const res = await fetch("/api/token");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          token = data.token;
+          setStoredToken(token);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return token || "";
+}
+
 export async function fetchAPI<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = getStoredToken();
+  let token = getStoredToken();
+  if (!token && typeof window !== "undefined") {
+    token = await ensureToken();
+  }
   const headers = new Headers(options.headers);
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -178,8 +212,8 @@ export async function startSession(title: string, course?: string): Promise<Sess
   });
 }
 
-export async function stopSession(): Promise<{ status: string; session_id: number }> {
-  return fetchAPI<{ status: string; session_id: number }>("/api/sessions/stop", {
+export async function stopSession(): Promise<Session & { session_id?: number }> {
+  return fetchAPI<Session & { session_id?: number }>("/api/sessions/stop", {
     method: "POST",
   });
 }
@@ -308,6 +342,37 @@ export async function syncGoogle(
 export async function disconnectGoogle(): Promise<{ status: string; message: string }> {
   return fetchAPI<{ status: string; message: string }>("/api/integrations/google/disconnect", {
     method: "POST",
+  });
+}
+
+export type GoogleAppId = "classroom" | "calendar" | "docs" | "drive" | "meet";
+
+export interface GoogleAppsStatus {
+  configured: boolean;
+  authenticated: boolean;
+  email: string | null;
+  apps: Record<GoogleAppId, { connected: boolean; scopes: string[] }>;
+}
+
+export async function getGoogleApps(): Promise<GoogleAppsStatus> {
+  return fetchAPI<GoogleAppsStatus>("/api/integrations/google/apps");
+}
+
+export async function connectGoogleApp(app: GoogleAppId): Promise<{ auth_url: string; opened: string }> {
+  return fetchAPI<{ auth_url: string; opened: string }>("/api/integrations/google/connect", {
+    method: "POST",
+    body: JSON.stringify({ app }),
+  });
+}
+
+export async function runGoogleAppAction(app: GoogleAppId): Promise<Record<string, any>> {
+  return fetchAPI<Record<string, any>>(`/api/integrations/google/apps/${app}/action`, { method: "POST" });
+}
+
+export async function saveGoogleClientSecret(content: string): Promise<{ status: string; message: string }> {
+  return fetchAPI<{ status: string; message: string }>("/api/integrations/google/client-secret", {
+    method: "POST",
+    body: JSON.stringify({ content }),
   });
 }
 

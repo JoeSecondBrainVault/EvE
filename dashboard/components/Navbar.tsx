@@ -16,7 +16,7 @@ import {
   GraduationCap,
   Terminal
 } from "lucide-react";
-import { getStatus, SystemStatus } from "@/lib/api";
+import { getStatus, ensureToken, SystemStatus } from "@/lib/api";
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -26,6 +26,7 @@ export default function Navbar() {
     let mounted = true;
     const fetchStatus = async () => {
       try {
+        await ensureToken();
         const s = await getStatus();
         if (mounted) setStatus(s);
       } catch {
@@ -127,7 +128,7 @@ export default function Navbar() {
             <span>Intelligence:</span>
           </span>
           <span className="text-[11px] font-medium text-slate-300">
-            {status?.has_cloud_llm ? "Gemini 2.5 Flash" : "Local Ollama 7B"}
+            {status?.has_cloud_llm ? "Cloud LLM (Gemini/Groq)" : "Local Ollama / CPU"}
           </span>
         </div>
       </div>

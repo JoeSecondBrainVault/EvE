@@ -25,13 +25,15 @@ import {
   EyeOff,
   Zap,
   Lock,
-  Mail
+  Mail,
+  AlertCircle
 } from "lucide-react";
 import { 
   getStatus, 
   getDevices, 
   getStoredToken, 
   setStoredToken, 
+  ensureToken,
   SystemStatus,
   getGoogleStatus,
   getGoogleAuthUrl,
@@ -53,6 +55,8 @@ import {
 export default function SettingsPage() {
   const [token, setToken] = useState("");
   const [savedTokenMsg, setSavedTokenMsg] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [verifyingToken, setVerifyingToken] = useState(false);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [devices, setDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,7 +104,8 @@ export default function SettingsPage() {
 
   const loadSettingsData = async () => {
     setLoading(true);
-    setToken(getStoredToken());
+    const activeToken = await ensureToken();
+    setToken(activeToken);
     try {
       const [s, dev, g, v, k, profs] = await Promise.all([
         getStatus().catch(() => null),
@@ -134,6 +139,14 @@ export default function SettingsPage() {
     setSavingKeys(true);
     setKeysMsg(null);
     setKeysError(null);
+
+    const activeToken = getStoredToken();
+    if (!activeToken) {
+      setKeysError("Backend authorization token is missing. Please save your Local API Bearer Token (from data/api_token) in the section above first.");
+      setSavingKeys(false);
+      return;
+    }
+
     try {
       const payload: { groq_api_key?: string; gemini_api_key?: string } = {};
       if (groqInput.trim()) payload.groq_api_key = groqInput.trim();
@@ -147,18 +160,43 @@ export default function SettingsPage() {
       setApiKeys(updatedKeys);
       setTimeout(() => setKeysMsg(null), 5000);
     } catch (err: any) {
-      setKeysError(err.message || "Failed to update API keys.");
+      if (err.message?.includes("token") || err.message?.includes("401")) {
+        setKeysError("Backend authorization failed: Local API Bearer Token is missing or invalid. Please check data/api_token and save it in the section above.");
+      } else {
+        setKeysError(err.message || "Failed to update API keys.");
+      }
     } finally {
       setSavingKeys(false);
     }
   };
 
-  const handleSaveToken = (e: React.FormEvent) => {
+  const handleSaveToken = async (e: React.FormEvent) => {
     e.preventDefault();
-    setStoredToken(token.trim());
-    setSavedTokenMsg(true);
-    setTimeout(() => setSavedTokenMsg(false), 3000);
-    loadSettingsData();
+    const trimmed = token.trim();
+    if (!trimmed) {
+      setTokenError("Please enter a valid token.");
+      setSavedTokenMsg(false);
+      return;
+    }
+    setVerifyingToken(true);
+    setTokenError(null);
+    setSavedTokenMsg(false);
+    try {
+      const res = await fetch("http://127.0.0.1:8765/api/status", {
+        headers: { Authorization: `Bearer ${trimmed}` }
+      });
+      if (!res.ok) {
+        throw new Error(`Invalid token (Backend returned status ${res.status}: ${res.statusText})`);
+      }
+      setStoredToken(trimmed);
+      setSavedTokenMsg(true);
+      setTimeout(() => setSavedTokenMsg(false), 4000);
+      loadSettingsData();
+    } catch (err: any) {
+      setTokenError(err.message || "Failed to verify token with backend.");
+    } finally {
+      setVerifyingToken(false);
+    }
   };
 
   const handleConnectGoogle = async (loginHint?: string) => {
@@ -257,7 +295,71 @@ export default function SettingsPage() {
       </div>
 
       <div className="space-y-6">
-        {/* 1. AI Model API Keys (Groq & Gemini) */}
+        {/* 1. API Token Authentication */}
+        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/20">
+                <Key className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                  <span>Local API Bearer Token</span>
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                      token && status
+                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                    }`}
+                  >
+                    {token && status ? "● Connected & Authorized" : "● Authorization Required"}
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Required to authorize your browser to control the local E.V.E. backend. Stored in <code className="text-emerald-400 font-mono">data/api_token</code>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveToken} className="space-y-3">
+            <div className="flex gap-2">
+              <input
+                type="password"
+                placeholder="Paste Bearer token from data/api_token..."
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                className="flex-1 px-3.5 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500 font-mono"
+              />
+              <button
+                type="submit"
+                disabled={verifyingToken}
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors shrink-0"
+              >
+                {verifyingToken ? "Verifying..." : "Save Token"}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Generated once per installation at <code className="bg-slate-950 px-1.5 py-0.5 rounded text-slate-400 font-mono">data/api_token</code>. If you opened the dashboard via desktop launcher or tray, this connects automatically.
+            </p>
+          </form>
+
+          {tokenError && (
+            <p className="text-xs text-rose-400 flex items-center space-x-1.5 font-medium">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <span>{tokenError}</span>
+            </p>
+          )}
+
+          {savedTokenMsg && (
+            <p className="text-xs text-emerald-400 flex items-center space-x-1.5 font-medium">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Token verified and saved successfully. Backend requests authorized.</span>
+            </p>
+          )}
+        </div>
+
+        {/* 2. AI Model API Keys (Groq & Gemini) */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
             <div className="flex items-center space-x-3">
@@ -287,7 +389,7 @@ export default function SettingsPage() {
                     ? "Groq LPU (300+ tok/s)"
                     : apiKeys?.active_provider === "gemini"
                     ? "Gemini 2.5 Flash"
-                    : "Local RTX 4060 (Ollama 7B)"}
+                    : "Local Offline (Ollama 7B)"}
                 </span>
               </span>
             </div>
@@ -419,44 +521,6 @@ export default function SettingsPage() {
           </form>
         </div>
 
-        {/* 2. API Token Authentication */}
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-              <Key className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-white">Local API Bearer Token</h2>
-              <p className="text-xs text-slate-400">
-                Generated per-installation at <code className="text-emerald-400 font-mono">data/api_token</code> to secure 127.0.0.1 loopback communication.
-              </p>
-            </div>
-          </div>
-
-          <form onSubmit={handleSaveToken} className="flex gap-2">
-            <input
-              type="password"
-              placeholder="Paste Bearer token from data/api_token..."
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              className="flex-1 px-3.5 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500 font-mono"
-            />
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors shrink-0"
-            >
-              Save Token
-            </button>
-          </form>
-
-          {savedTokenMsg && (
-            <p className="text-xs text-emerald-400 flex items-center space-x-1.5 font-medium">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Token saved successfully. Backend requests authorized.</span>
-            </p>
-          )}
-        </div>
-
         {/* 3. Hardware Acceleration & AI Model Status */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
           <div className="flex items-center space-x-3">
@@ -465,7 +529,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">Hardware & Models</h2>
-              <p className="text-xs text-slate-400">Local RTX 4060 CUDA STT and hybrid Groq/Gemini/Ollama LLM engine.</p>
+              <p className="text-xs text-slate-400">Local CUDA / CPU STT and hybrid Groq/Gemini/Ollama LLM engine.</p>
             </div>
           </div>
 

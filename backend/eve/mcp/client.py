@@ -53,6 +53,24 @@ class MCPClient:
                     env=env,
                 )
 
+                # Drain stderr in background daemon thread to prevent pipe buffer deadlock
+                def _drain_stderr(proc: subprocess.Popen, name: str) -> None:
+                    try:
+                        if proc.stderr:
+                            for line in iter(proc.stderr.readline, ""):
+                                if not line:
+                                    break
+                                logger.debug("[MCP %s stderr] %s", name, line.strip())
+                    except Exception:
+                        pass
+
+                threading.Thread(
+                    target=_drain_stderr,
+                    args=(self._process, self.config.name),
+                    name=f"mcp-stderr-{self.config.name}",
+                    daemon=True,
+                ).start()
+
                 # Initialize handshake (JSON-RPC initialize)
                 resp = self._send_request(
                     "initialize",

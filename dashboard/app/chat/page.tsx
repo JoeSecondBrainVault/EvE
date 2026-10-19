@@ -22,11 +22,58 @@ interface ChatMessage {
   citations?: Citation[];
 }
 
+function renderMarkdown(text: string) {
+  const lines = text.split("\n");
+  return lines.map((line, lIdx) => {
+    const parts = [];
+    const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+    let lastIndex = 0;
+    let match;
+    let keyIdx = 0;
+
+    while ((match = regex.exec(line)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(<span key={keyIdx++}>{line.substring(lastIndex, match.index)}</span>);
+      }
+      const token = match[0];
+      if (token.startsWith("**") && token.endsWith("**")) {
+        parts.push(
+          <strong key={keyIdx++} className="font-semibold text-white">
+            {token.slice(2, -2)}
+          </strong>
+        );
+      } else if (token.startsWith("*") && token.endsWith("*")) {
+        parts.push(
+          <em key={keyIdx++} className="italic text-slate-300">
+            {token.slice(1, -1)}
+          </em>
+        );
+      } else if (token.startsWith("`") && token.endsWith("`")) {
+        parts.push(
+          <code key={keyIdx++} className="px-1.5 py-0.5 rounded bg-slate-800 text-emerald-400 font-mono text-xs">
+            {token.slice(1, -1)}
+          </code>
+        );
+      }
+      lastIndex = regex.lastIndex;
+    }
+    if (lastIndex < line.length) {
+      parts.push(<span key={keyIdx++}>{line.substring(lastIndex)}</span>);
+    }
+
+    return (
+      <p key={lIdx} className={line.trim() === "" ? "h-2" : "mb-1 last:mb-0"}>
+        {parts.length > 0 ? parts : "\u00A0"}
+      </p>
+    );
+  });
+}
+
 export default function AskEvePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "Hello Joe! I am E.V.E. You can ask me anything about your past recorded lectures. I search your transcripts with hybrid BM25 + vector search and ground every answer with exact audio timestamp citations.",
+      content: "Hello! I am E.V.E. You can ask me anything about your past recorded lectures. I search your transcripts with hybrid BM25 + vector search and ground every answer with exact audio timestamp citations.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -123,7 +170,11 @@ export default function AskEvePage() {
                   : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none shadow-sm"
               }`}
             >
-              <div className="whitespace-pre-wrap">{msg.content}</div>
+              {msg.role === "user" ? (
+                <div className="whitespace-pre-wrap">{msg.content}</div>
+              ) : (
+                <div className="leading-relaxed">{renderMarkdown(msg.content)}</div>
+              )}
 
               {/* Citations Box */}
               {msg.citations && msg.citations.length > 0 && (

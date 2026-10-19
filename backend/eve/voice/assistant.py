@@ -134,12 +134,18 @@ class VoiceAssistant:
                     final_spoken_text = tool_output["answer"]
             elif action.tool == "summarize_last_session":
                 tool_output = self._tool_summarize_last_session()
-                if tool_output.get("summary"):
+                if tool_output.get("title") and tool_output["title"] != "No Sessions":
                     final_spoken_text = f"Summary for {tool_output['title']}: {tool_output['summary']}"
+                else:
+                    final_spoken_text = tool_output.get("summary", "No recorded sessions found in the archive yet.")
             elif action.tool == "quiz_me":
                 tool_output = self._tool_quiz_me(action.arguments.get("course"))
-                if tool_output.get("question"):
-                    final_spoken_text = f"Here is a question on {tool_output.get('course', 'your coursework')}: {tool_output['question']}"
+                if tool_output.get("has_items") and tool_output.get("question"):
+                    opts = tool_output.get("options", [])
+                    opts_text = f" Options are: {', '.join(opts)}." if opts else ""
+                    final_spoken_text = f"Here is a question on {tool_output.get('course') or 'your coursework'}: {tool_output['question']}{opts_text}"
+                else:
+                    final_spoken_text = tool_output.get("message") or "No quiz items generated yet. Record a lecture first to generate practice quizzes!"
             elif action.tool == "join_google_meet":
                 tool_output = self._tool_join_google_meet(action.arguments)
                 if tool_output.get("status") == "clarification_needed":
@@ -186,14 +192,15 @@ class VoiceAssistant:
         title = args.get("title") or "Voice Started Lecture"
         course = args.get("course")
         if self.session_manager:
-            session = self.session_manager.start(title=title, course=course)
+            session = self.session_manager.start(title=title, course=course, consent_confirmed=True)
             return {"status": "started", "session_id": session.id, "title": session.title}
         return {"status": "simulated_started", "title": title, "course": course}
 
     def _tool_stop_session(self) -> dict[str, Any]:
         if self.session_manager:
-            session_id = self.session_manager.stop()
-            return {"status": "stopped", "session_id": session_id}
+            row = self.session_manager.stop()
+            sid = row.id if hasattr(row, "id") else row
+            return {"status": "stopped", "session_id": sid}
         return {"status": "simulated_stopped"}
 
     def _tool_add_task(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -264,7 +271,10 @@ class VoiceAssistant:
                 select(Note).order_by(col(Note.created_at).desc()).limit(1)
             ).first()
             if not note:
-                return {"summary": "No recorded sessions found in the archive yet."}
+                return {
+                    "title": "No Sessions",
+                    "summary": "No recorded sessions found in the archive yet.",
+                }
             return {
                 "session_id": note.session_id,
                 "title": note.title,
@@ -272,18 +282,43 @@ class VoiceAssistant:
             }
 
     def _tool_quiz_me(self, course: str | None = None) -> dict[str, Any]:
+        import json
+        import random
+        from eve.models import Course, Session
+
         with DBSession(self.engine) as db:
-            query = select(QuizItem)
-            items = db.exec(query.limit(20)).all()
+            if course:
+                query = (
+                    select(QuizItem)
+                    .join(Session, QuizItem.session_id == Session.id)
+                    .join(Course, Session.course_id == Course.id)
+                    .where(Course.name.ilike(f"%{course.strip()}%"))
+                )
+                items = db.exec(query.limit(20)).all()
+                if not items:
+                    items = db.exec(select(QuizItem).limit(20)).all()
+            else:
+                items = db.exec(select(QuizItem).limit(20)).all()
+
             if not items:
-                return {"question": "No quiz items generated yet. Record a lecture first to generate practice quizzes!"}
-            import random
+                return {
+                    "has_items": False,
+                    "message": "No quiz items generated yet. Record a lecture first to generate practice quizzes!",
+                }
             selected = random.choice(items)
+            options = []
+            try:
+                options = json.loads(selected.options_json) if selected.options_json else []
+            except Exception:
+                options = []
+
             return {
+                "has_items": True,
                 "id": selected.id,
                 "question": selected.question,
-                "options": selected.options_json,
+                "options": options,
                 "explanation": selected.explanation,
+                "course": course,
             }
 
     def _tool_join_google_meet(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -321,6 +356,7 @@ class VoiceAssistant:
             try:
                 session = self.session_manager.start(
                     title=f"Google Meet Lecture ({res.get('email', email)})",
+                    course=None,
                     consent_confirmed=True,
                 )
                 res["session_id"] = session.id
@@ -361,11 +397,7 @@ class VoiceAssistant:
         if not app_name:
             return {"status": "error", "message": "No application name provided."}
 
-        target_cmd = None
-        for key, cmd in safe_apps.items():
-            if key == app_name or key in app_name:
-                target_cmd = cmd
-                break
+        target_cmd = safe_apps.get(app_name)
 
         if not target_cmd:
             available = ", ".join(sorted(set(safe_apps.keys())))

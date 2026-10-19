@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -60,22 +61,25 @@ class SlidingWindowRateLimiter:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._history: dict[str, collections.deque[float]] = collections.defaultdict(collections.deque)
+        self._lock = threading.Lock()
 
     def is_allowed(self, client_id: str) -> bool:
         """Returns True if the request is permitted under the rate limit."""
-        now = time.time()
-        q = self._history[client_id]
+        with self._lock:
+            now = time.time()
+            q = self._history[client_id]
 
-        # Evict timestamps outside current window
-        cutoff = now - self.window_seconds
-        while q and q[0] < cutoff:
-            q.popleft()
+            # Evict timestamps outside current window
+            cutoff = now - self.window_seconds
+            while q and q[0] < cutoff:
+                q.popleft()
 
-        if len(q) < self.max_requests:
-            q.append(now)
-            return True
+            if len(q) < self.max_requests:
+                q.append(now)
+                return True
 
-        return False
+            return False
 
     def reset(self) -> None:
-        self._history.clear()
+        with self._lock:
+            self._history.clear()

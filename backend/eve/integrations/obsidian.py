@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 
 from eve.config import Settings
@@ -92,11 +91,14 @@ class ObsidianPublisher:
         course_tag = re.sub(r"\s+", "-", (course_name or "general").lower())
 
         # Calculate speaker duration stats
-        them_count = sum(1 for s in segments if s.source == "them")
-        me_count = sum(1 for s in segments if s.source == "me")
-        total_utts = max(1, len(segments))
-        them_pct = round((them_count / total_utts) * 100)
-        me_pct = 100 - them_pct
+        if not segments:
+            them_pct = 0
+            me_pct = 0
+        else:
+            them_count = sum(1 for s in segments if s.source == "them")
+            total_utts = len(segments)
+            them_pct = round((them_count / total_utts) * 100)
+            me_pct = 100 - them_pct
 
         total_duration_m = 0.0
         if segments:
@@ -179,7 +181,7 @@ class ObsidianPublisher:
                     mark = "*(Correct)*" if j == q.correct_index else ""
                     lines.append(f"- **{letters[j]}**) {opt} {mark}")
                 lines.append("")
-                lines.append(f"> [!TIP] Explanation")
+                lines.append("> [!TIP] Explanation")
                 lines.append(f"> {q.explanation}")
                 lines.append("")
 

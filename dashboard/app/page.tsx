@@ -32,6 +32,8 @@ import {
   getChromeProfiles,
   launchGoogleMeet,
   launchDesktopApp,
+  getStoredToken,
+  ensureToken,
   ChromeProfile,
   Stats, 
   Session, 
@@ -44,6 +46,7 @@ export default function OverviewPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasToken, setHasToken] = useState(true);
 
   // Launcher tab mode: "meet" or "manual"
   const [launcherMode, setLauncherMode] = useState<"meet" | "manual">("meet");
@@ -66,6 +69,16 @@ export default function OverviewPage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const loadData = async () => {
+    let token = getStoredToken();
+    if (!token) {
+      token = await ensureToken();
+    }
+    if (!token) {
+      setHasToken(false);
+      setLoading(false);
+      return;
+    }
+    setHasToken(true);
     try {
       const [sData, sessData, tData, profData] = await Promise.all([
         getStats().catch(() => null),
@@ -152,15 +165,36 @@ export default function OverviewPage() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">
+      {/* Missing Token Setup Banner */}
+      {!hasToken && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-amber-200">API Bearer Token Required</p>
+              <p className="text-xs text-amber-400/80">
+                Connect your local E.V.E. backend by copying the token from <code className="bg-slate-900 px-1.5 py-0.5 rounded text-slate-300 font-mono">data/api_token</code> into Settings.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/settings"
+            className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold transition-colors shrink-0 text-center"
+          >
+            Configure Token
+          </Link>
+        </div>
+      )}
+
       {/* Header Greeting */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-white flex items-center space-x-2">
-            <span>Welcome back, Joe</span>
+            <span>Welcome to E.V.E.</span>
             <Sparkles className="w-5 h-5 text-emerald-400" />
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            BSIT Assistant • All systems operational on your Legion RTX 4060
+            Personal Study & Work Assistant • Local AI Transcriptions & Obsidian Vault Sync
           </p>
         </div>
 
@@ -300,31 +334,25 @@ export default function OverviewPage() {
                     </div>
                   )}
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                      Select Google Account
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {profiles.map((p) => {
-                        const isSelected = selectedProfile === p.email;
-                        return (
-                          <button
-                            type="button"
-                            key={p.directory}
-                            onClick={() => setSelectedProfile(p.email)}
-                            className={`text-left p-2.5 rounded-lg border transition-all text-xs ${
-                              isSelected
-                                ? "bg-rose-500/10 border-rose-500 text-white shadow-sm"
-                                : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800/40 hover:text-slate-200"
-                            }`}
-                          >
-                            <div className="font-semibold truncate">{p.name || p.directory}</div>
-                            <div className="text-[11px] text-slate-400 font-mono truncate">{p.email}</div>
-                          </button>
-                        );
-                      })}
+                  {profiles.length > 1 && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                        Chrome Profile (Optional)
+                      </label>
+                      <select
+                        value={selectedProfile}
+                        onChange={(e) => setSelectedProfile(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 text-xs focus:outline-none focus:border-rose-500"
+                      >
+                        <option value="">Default Chrome Account</option>
+                        {profiles.map((p) => (
+                          <option key={p.directory} value={p.email}>
+                            {p.name || p.directory} ({p.email})
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                  </div>
+                  )}
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
@@ -562,7 +590,7 @@ export default function OverviewPage() {
 
                     {task.status === "inbox" && (
                       <div className="text-[10px] text-amber-400/90 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
-                        Low confidence (quote: "{task.evidence?.slice(0, 45)}...")
+                        {task.evidence ? `Needs review (quote: "${task.evidence.slice(0, 45)}...")` : "Needs review"}
                       </div>
                     )}
                   </div>

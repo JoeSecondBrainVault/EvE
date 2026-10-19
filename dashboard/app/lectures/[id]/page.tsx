@@ -82,7 +82,11 @@ export default function LectureDetailPage() {
   };
 
   useEffect(() => {
-    if (sessionId) loadData();
+    if (isNaN(sessionId) || sessionId <= 0) {
+      setLoading(false);
+      return;
+    }
+    loadData();
   }, [sessionId]);
 
   const handleProcess = async () => {

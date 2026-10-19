@@ -38,13 +38,6 @@ def list_devices() -> list[dict[str, Any]]:
     pa = pyaudio.PyAudio()
     devices: list[dict[str, Any]] = []
     try:
-        wasapi_api_idx = None
-        for i in range(pa.get_host_api_count()):
-            api_info = pa.get_host_api_info_by_index(i)
-            if "WASAPI" in api_info.get("name", "").upper():
-                wasapi_api_idx = i
-                break
-
         default_loopback_idx = None
         if hasattr(pa, "get_default_wasapi_loopback"):
             try:
