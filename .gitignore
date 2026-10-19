@@ -1,0 +1,43 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+client_secret*.json
+token*.json
+.secrets.local
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+
+# --- E.V.E. runtime data (recordings, DB, API token, models) ---
+data/
+models/
+*.wav
+*.onnx
+
+# --- Tooling caches ---
+graphify-out/
+.graphifyignore
+security-reports/
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
