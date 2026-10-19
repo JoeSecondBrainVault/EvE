@@ -418,9 +418,47 @@ def create_app(settings: Settings | None = None, components: Components | None =
         app.state.tray = None
         if getattr(settings, "tray_enabled", False):
             try:
+                def _tray_start() -> None:
+                    import sys
+
+                    consent = False
+                    if sys.platform == "win32":
+                        try:
+                            import ctypes
+
+                            res = ctypes.windll.user32.MessageBoxW(
+                                0,
+                                "Recording Consent Required:\n\nDo all lecture/meeting participants consent to being recorded?",
+                                "E.V.E. Recording Consent",
+                                0x04 | 0x20,
+                            )
+                            consent = (res == 6)
+                        except Exception:
+                            consent = False
+                    else:
+                        try:
+                            import tkinter as tk
+                            from tkinter import messagebox
+
+                            root = tk.Tk()
+                            root.withdraw()
+                            root.attributes("-topmost", True)
+                            consent = bool(messagebox.askyesno(
+                                "E.V.E. Recording Consent",
+                                "Recording Consent Required:\n\nDo all lecture/meeting participants consent to being recorded?",
+                            ))
+                            root.destroy()
+                        except Exception:
+                            consent = False
+
+                    if consent:
+                        app.state.manager.start(title="Tray Session", course=None, consent_confirmed=True)
+                    else:
+                        log.warning("Tray session start aborted: recording consent was not confirmed.")
+
                 tray = SystemTray(
                     settings=settings,
-                    on_start_session=lambda: app.state.manager.start(title="Tray Session", course=None, consent_confirmed=True),
+                    on_start_session=_tray_start,
                     on_stop_session=lambda: app.state.manager.stop(),
                 )
                 tray.run_detached()
@@ -1244,68 +1282,13 @@ def create_app(settings: Settings | None = None, components: Components | None =
     @app.post("/api/mcp/servers", dependencies=auth)
     def save_mcp_server(body: MCPServerConfig, request: Request) -> dict[str, Any]:
         check_rate_limit(request)
-        import re
-        import sys
-        from pathlib import Path
+        from eve.mcp.manager import validate_mcp_config
 
-        # Validate server name: alphanumeric, dashes, underscores
-        if not re.match(r"^[a-zA-Z0-9_-]{1,64}$", body.name):
+        valid, err_msg = validate_mcp_config(body)
+        if not valid:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid server name. Must contain only alphanumeric characters, dashes, or underscores.",
-            )
-
-        # 1. Strictly validate command runtime: ONLY Python executable
-        cmd_str = body.command.strip()
-        cmd_path = Path(cmd_str)
-        is_allowed_cmd = False
-
-        if len(cmd_path.parts) > 1 or cmd_path.is_absolute():
-            try:
-                resolved_cmd = cmd_path.resolve()
-                sys_exe = Path(sys.executable).resolve()
-                venv_prefix = Path(sys.prefix).resolve()
-                if resolved_cmd == sys_exe or resolved_cmd.is_relative_to(venv_prefix):
-                    is_allowed_cmd = True
-                    body.command = sys.executable
-            except Exception:
-                is_allowed_cmd = False
-        else:
-            base_name = cmd_str.lower()
-            if base_name in ("python", "python3", "python.exe"):
-                is_allowed_cmd = True
-                body.command = sys.executable
-
-        if not is_allowed_cmd:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Disallowed command runtime: '{body.command}'. Only the active Python virtualenv is permitted.",
-            )
-
-        # 2. Pin args strictly to app-shipped modules in eve.mcp.servers: ["-m", "eve.mcp.servers.<module>"]
-        # Reject any other arguments, scripts, glued flags, or options.
-        if (
-            len(body.args) != 2
-            or body.args[0] != "-m"
-            or not body.args[1].startswith("eve.mcp.servers.")
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Disallowed arguments. MCP servers must strictly use '-m eve.mcp.servers.<module_name>' without additional flags or script paths.",
-            )
-
-        module_name = body.args[1][len("eve.mcp.servers."):]
-        if not re.match(r"^[a-zA-Z0-9_]+$", module_name):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid module target: '{body.args[1]}'.",
-            )
-
-        server_py = Path(__file__).parent / "mcp" / "servers" / f"{module_name}.py"
-        if not server_py.exists():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown MCP server module: '{body.args[1]}'.",
+                detail=err_msg,
             )
 
         success = request.app.state.mcp.save_server(body)

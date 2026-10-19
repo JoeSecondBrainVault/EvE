@@ -56,7 +56,7 @@ export default function OverviewPage() {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [meetUrl, setMeetUrl] = useState("");
-  const [meetConsent, setMeetConsent] = useState(true);
+  const [meetConsent, setMeetConsent] = useState(false);
   const [meetLoading, setMeetLoading] = useState(false);
   const [meetError, setMeetError] = useState<string | null>(null);
 
@@ -66,7 +66,7 @@ export default function OverviewPage() {
   // New session form state (manual)
   const [title, setTitle] = useState("");
   const [course, setCourse] = useState("");
-  const [consent, setConsent] = useState(true);
+  const [consent, setConsent] = useState(false);
   const [starting, setStarting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -149,7 +149,7 @@ export default function OverviewPage() {
     setStarting(true);
     setActionError(null);
     try {
-      await startSession(title.trim(), course.trim() || undefined);
+      await startSession(title.trim(), course.trim() || undefined, consent);
       router.push("/live");
     } catch (err: any) {
       setActionError(err.message || "Failed to start session");

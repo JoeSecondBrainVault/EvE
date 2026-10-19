@@ -113,7 +113,24 @@ def cmd_tray(_: argparse.Namespace) -> None:
             except Exception:
                 consent = False
         else:
-            consent = True
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                consent = bool(messagebox.askyesno(
+                    "E.V.E. Recording Consent",
+                    "Recording Consent Required:\n\nDo all lecture/meeting participants consent to being recorded?",
+                ))
+                root.destroy()
+            except Exception:
+                if sys.stdin and sys.stdin.isatty():
+                    resp = input("Recording Consent: Do all participants consent to recording? [y/N]: ").strip().lower()
+                    consent = resp in ("y", "yes")
+                else:
+                    consent = False
 
         if not consent:
             print("Recording cancelled: Participant consent was not confirmed.")

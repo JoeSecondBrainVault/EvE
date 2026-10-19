@@ -37,7 +37,10 @@ class MCPClient:
         with self._lock:
             try:
                 env = os.environ.copy()
-                env.update(self.config.env)
+                from eve.mcp.manager import is_safe_env_key
+
+                safe_env = {k: v for k, v in self.config.env.items() if is_safe_env_key(k)}
+                env.update(safe_env)
 
                 args = [self.config.command] + self.config.args
                 logger.info("Spawning MCP Server '%s': %s", self.config.name, args)

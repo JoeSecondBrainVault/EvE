@@ -139,7 +139,7 @@ export default function ToolsPage() {
   const [showMeet, setShowMeet] = useState(false);
   const [meetUrl, setMeetUrl] = useState("");
   const [autoRecord, setAutoRecord] = useState(true);
-  const [meetConsent, setMeetConsent] = useState(true);
+  const [meetConsent, setMeetConsent] = useState(false);
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("");
   const [meetLoading, setMeetLoading] = useState(false);

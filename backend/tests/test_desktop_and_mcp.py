@@ -270,6 +270,22 @@ def test_api_desktop_and_mcp_endpoints(tmp_path: Path) -> None:
         )
         assert resp_node.status_code == 400
 
+        # S5: Verify dangerous environment variables are rejected with 400
+        for bad_env_key in ["PYTHONPATH", "PYTHONSTARTUP", "LD_PRELOAD", "PATH", "DYLD_INSERT_LIBRARIES"]:
+            resp_env = client.post(
+                "/api/mcp/servers",
+                json={
+                    "name": "env_inject_test",
+                    "command": "python",
+                    "args": ["-m", "eve.mcp.servers.workspace"],
+                    "env": {bad_env_key: "/tmp/evil"},
+                    "enabled": False,
+                },
+                headers=headers,
+            )
+            assert resp_env.status_code == 400
+            assert "Disallowed environment variable" in resp_env.json().get("detail", "")
+
         # 6. Chat search top_k bounded validation (Bug 23 fix)
         resp_too_high = client.get("/api/chat/search?q=test&top_k=99999", headers=headers)
         assert resp_too_high.status_code == 422
@@ -303,4 +319,55 @@ def test_workspace_mcp_server_jsonrpc() -> None:
         })
         assert call_res is not None
         assert "Google account not logged in" in call_res["result"]["content"][0]["text"]
+
+
+def test_mcp_manager_load_servers_security(tmp_path: Path) -> None:
+    from eve.mcp.manager import MCPManager, is_safe_env_key
+
+    # Safe env check unit verification
+    assert is_safe_env_key("SAFE_VAR") is True
+    assert is_safe_env_key("PYTHONPATH") is False
+    assert is_safe_env_key("PYTHONSTARTUP") is False
+    assert is_safe_env_key("LD_PRELOAD") is False
+    assert is_safe_env_key("PATH") is False
+    assert is_safe_env_key("bad-name!") is False
+    assert is_safe_env_key("") is False
+
+    # N20: Untrusted/hand-edited mcp_servers.json must be rejected on load_servers()
+    config_file = tmp_path / "mcp_servers.json"
+    untrusted_config = {
+        "servers": [
+            {
+                "name": "malicious_env_server",
+                "command": "python",
+                "args": ["-m", "eve.mcp.servers.workspace"],
+                "env": {"PYTHONPATH": "/tmp/hostile"},
+                "enabled": True,
+            },
+            {
+                "name": "malicious_cmd_server",
+                "command": "bash",
+                "args": ["-c", "touch /tmp/evil"],
+                "enabled": True,
+            },
+            {
+                "name": "malicious_args_server",
+                "command": "python",
+                "args": ["-c", "print('hacked')"],
+                "enabled": True,
+            },
+        ]
+    }
+    config_file.write_text(json.dumps(untrusted_config), encoding="utf-8")
+
+    settings = Settings(data_dir=tmp_path, recordings_dir=tmp_path / "rec", db_path=tmp_path / "test.db")
+    mgr = MCPManager(settings)
+    mgr.config_file = config_file
+
+    with patch("eve.mcp.manager.MCPClient") as mock_client_cls:
+        mgr.load_servers()
+        # None of the malicious servers should have had an MCPClient instantiated or connected
+        mock_client_cls.assert_not_called()
+        assert len(mgr._clients) == 0
+
 

@@ -201,13 +201,17 @@ export async function getDevices(): Promise<Array<{ id: number; name: string; ty
   return fetchAPI("/api/devices");
 }
 
-export async function startSession(title: string, course?: string): Promise<Session> {
+export async function startSession(
+  title: string,
+  course?: string,
+  consentConfirmed: boolean = false
+): Promise<Session> {
   return fetchAPI<Session>("/api/sessions/start", {
     method: "POST",
     body: JSON.stringify({
       title,
       course: course || null,
-      consent_confirmed: true,
+      consent_confirmed: consentConfirmed,
     }),
   });
 }

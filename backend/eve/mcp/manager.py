@@ -12,6 +12,108 @@ from eve.mcp.models import MCPServerConfig, MCPTool, MCPToolCallResult
 
 logger = logging.getLogger(__name__)
 
+DANGEROUS_ENV_PREFIXES = (
+    "PYTHON",
+    "LD_",
+    "DYLD_",
+    "PERL",
+    "RUBY",
+    "NODE_",
+    "BASH",
+    "SHELL",
+)
+
+DANGEROUS_ENV_KEYS = {
+    "ENV",
+    "SHELL",
+    "PROMPT_COMMAND",
+    "PS1",
+    "IFS",
+    "PATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "COMSPEC",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SSLKEYLOGFILE",
+    "KRB5_CONFIG",
+}
+
+
+def is_safe_env_key(key: str) -> bool:
+    """Checks whether an environment variable key is safe to pass to child processes."""
+    if not isinstance(key, str) or not key:
+        return False
+    import re
+
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", key):
+        return False
+    upper = key.upper()
+    if upper in DANGEROUS_ENV_KEYS:
+        return False
+    if any(upper.startswith(prefix) for prefix in DANGEROUS_ENV_PREFIXES):
+        return False
+    return True
+
+
+def validate_mcp_config(config: MCPServerConfig) -> tuple[bool, str]:
+    """Strictly validates MCPServerConfig name, command, args, and env against security policy."""
+    import re
+    import sys
+    from pathlib import Path
+
+    # 1. Validate server name
+    if not re.match(r"^[a-zA-Z0-9_-]{1,64}$", config.name):
+        return False, "Invalid server name. Must contain only alphanumeric characters, dashes, or underscores."
+
+    # 2. Strictly validate command runtime: ONLY active Python virtualenv executable
+    cmd_str = (config.command or "").strip()
+    cmd_path = Path(cmd_str)
+    is_allowed_cmd = False
+
+    if len(cmd_path.parts) > 1 or cmd_path.is_absolute():
+        try:
+            resolved_cmd = cmd_path.resolve()
+            sys_exe = Path(sys.executable).resolve()
+            venv_prefix = Path(sys.prefix).resolve()
+            if resolved_cmd == sys_exe or resolved_cmd.is_relative_to(venv_prefix):
+                is_allowed_cmd = True
+                config.command = sys.executable
+        except Exception:
+            is_allowed_cmd = False
+    else:
+        base_name = cmd_str.lower()
+        if base_name in ("python", "python3", "python.exe"):
+            is_allowed_cmd = True
+            config.command = sys.executable
+
+    if not is_allowed_cmd:
+        return False, f"Disallowed command runtime: '{config.command}'. Only the active Python virtualenv is permitted."
+
+    # 3. Pin args strictly to app-shipped modules in eve.mcp.servers: ["-m", "eve.mcp.servers.<module>"]
+    if (
+        len(config.args) != 2
+        or config.args[0] != "-m"
+        or not config.args[1].startswith("eve.mcp.servers.")
+    ):
+        return False, "Disallowed arguments. MCP servers must strictly use '-m eve.mcp.servers.<module_name>' without additional flags or script paths."
+
+    module_name = config.args[1][len("eve.mcp.servers."):]
+    if not re.match(r"^[a-zA-Z0-9_]+$", module_name):
+        return False, f"Invalid module target: '{config.args[1]}'."
+
+    server_py = Path(__file__).parent / "servers" / f"{module_name}.py"
+    if not server_py.exists():
+        return False, f"Unknown MCP server module: '{config.args[1]}'."
+
+    # 4. Strictly validate env: reject any dangerous environment variable (S5 fix)
+    for env_k in (config.env or {}).keys():
+        if not is_safe_env_key(env_k):
+            return False, f"Disallowed environment variable: '{env_k}'. Setting runtime, loader, or interpreter control variables is forbidden."
+
+    return True, ""
+
 
 class MCPManager:
     """Manages active MCP servers, tools, and execution routing."""
@@ -45,7 +147,7 @@ class MCPManager:
                 logger.debug("Could not write default mcp_servers.json: %s", exc)
 
     def load_servers(self) -> None:
-        """Reads configuration and connects to all enabled MCP servers."""
+        """Reads configuration and connects to all enabled MCP servers after validating security policy."""
         if not self.config_file.exists():
             return
 
@@ -53,11 +155,18 @@ class MCPManager:
             data = json.loads(self.config_file.read_text(encoding="utf-8"))
             servers_raw = data.get("servers", [])
             for s_cfg in servers_raw:
-                cfg = MCPServerConfig(**s_cfg)
-                if cfg.enabled and cfg.name not in self._clients:
-                    client = MCPClient(cfg)
-                    if client.connect():
-                        self._clients[cfg.name] = client
+                try:
+                    cfg = MCPServerConfig(**s_cfg)
+                    valid, err_msg = validate_mcp_config(cfg)
+                    if not valid:
+                        logger.warning("Skipping invalid/untrusted MCP server '%s' from config: %s", cfg.name, err_msg)
+                        continue
+                    if cfg.enabled and cfg.name not in self._clients:
+                        client = MCPClient(cfg)
+                        if client.connect():
+                            self._clients[cfg.name] = client
+                except Exception as inner_exc:
+                    logger.warning("Error parsing server config entry %s: %s", s_cfg, inner_exc)
         except Exception as exc:
             logger.error("Failed to load MCP servers from %s: %s", self.config_file, exc)
 
@@ -109,6 +218,11 @@ class MCPManager:
 
     def save_server(self, config: MCPServerConfig) -> bool:
         """Adds or updates an MCP server configuration and synchronizes connection state."""
+        valid, err_msg = validate_mcp_config(config)
+        if not valid:
+            logger.warning("Rejected invalid MCP server config '%s': %s", config.name, err_msg)
+            return False
+
         try:
             # 1. If enabling, verify connection first before persisting to disk (N18 fix)
             new_client: MCPClient | None = None
