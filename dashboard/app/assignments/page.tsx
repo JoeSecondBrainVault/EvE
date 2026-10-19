@@ -44,13 +44,15 @@ export default function AssignmentHelperPage() {
       const f = e.target.files[0];
       const ext = f.name.toLowerCase();
       if (!ext.endsWith(".pdf") && !ext.endsWith(".docx") && !ext.endsWith(".txt") && !ext.endsWith(".md")) {
-        setError("Please select a .pdf, .docx, .txt, or .md file.");
+        setError(`Unsupported file format "${f.name}". Please select a .pdf, .docx, .txt, or .md file.`);
         setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
         return;
       }
       if (f.size > 20 * 1024 * 1024) {
         setError("File size exceeds 20MB limit.");
         setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
         return;
       }
       setSelectedFile(f);

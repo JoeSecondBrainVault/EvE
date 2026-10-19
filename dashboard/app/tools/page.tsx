@@ -15,23 +15,30 @@ import {
   Loader2,
   LogOut,
   RefreshCw,
+  Terminal,
   Upload,
   Video,
+  Wrench,
   X,
 } from "lucide-react";
 import {
   ChromeProfile,
   GoogleAppId,
   GoogleAppsStatus,
+  MCPServerInfo,
+  MCPToolInfo,
   MeetLaunchResult,
+  callMCPTool,
   connectGoogleApp,
   disconnectGoogle,
   getChromeProfiles,
   getGoogleApps,
+  getMCPServers,
   launchDesktopApp,
   launchGoogleMeet,
   runGoogleAppAction,
   saveGoogleClientSecret,
+  saveMCPServer,
 } from "@/lib/api";
 
 interface ClassroomApp {
@@ -100,12 +107,20 @@ export default function ToolsPage() {
   const [loading, setLoading] = useState(true);
 
   const [waitingFor, setWaitingFor] = useState<GoogleAppId | null>(null);
+  const [authUrl, setAuthUrl] = useState<string>("");
+  const [browserOpened, setBrowserOpened] = useState<boolean>(true);
   const [connectError, setConnectError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [busyAction, setBusyAction] = useState<GoogleAppId | null>(null);
   const [actionResult, setActionResult] = useState<ActionResult>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // MCP Servers and Tool execution state
+  const [mcpServers, setMcpServers] = useState<MCPServerInfo[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [callingTool, setCallingTool] = useState<string | null>(null);
+  const [toolResult, setToolResult] = useState<{ tool: string; result: string; isError: boolean } | null>(null);
 
   const [secretText, setSecretText] = useState("");
   const [secretSaving, setSecretSaving] = useState(false);
@@ -114,6 +129,7 @@ export default function ToolsPage() {
   const [showMeet, setShowMeet] = useState(false);
   const [meetUrl, setMeetUrl] = useState("");
   const [autoRecord, setAutoRecord] = useState(true);
+  const [meetConsent, setMeetConsent] = useState(true);
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("");
   const [meetLoading, setMeetLoading] = useState(false);
@@ -127,6 +143,7 @@ export default function ToolsPage() {
       const s = await getGoogleApps();
       setStatus(s);
       setStatusError(null);
+      getMCPServers().then((res) => setMcpServers(res.servers || [])).catch(() => {});
       return s;
     } catch (err: any) {
       setStatusError(err.message || "Could not reach E.V.E. backend");
@@ -157,8 +174,12 @@ export default function ToolsPage() {
     setActionResult(null);
     try {
       const res = await connectGoogleApp(app);
-      // Backend opens the system browser; fall back to opening it from here.
-      if (res.opened !== "true") window.open(res.auth_url, "_blank", "noopener");
+      setAuthUrl(res.auth_url);
+      const wasOpened = res.opened === "true";
+      setBrowserOpened(wasOpened);
+      if (!wasOpened) {
+        window.open(res.auth_url, "_blank", "noopener");
+      }
       setWaitingFor(app);
       const started = Date.now();
       if (pollRef.current) clearInterval(pollRef.current);
@@ -225,11 +246,43 @@ export default function ToolsPage() {
     setMeetError(null);
     setMeetResult(null);
     try {
-      setMeetResult(await launchGoogleMeet(meetUrl.trim(), selectedProfile || undefined, autoRecord));
+      setMeetResult(await launchGoogleMeet(meetUrl.trim(), selectedProfile || undefined, autoRecord, meetConsent));
     } catch (err: any) {
       setMeetError(err.message || "Failed to launch Google Meet");
     } finally {
       setMeetLoading(false);
+    }
+  };
+
+  const handleToggleServer = async (server: MCPServerInfo) => {
+    setMcpLoading(true);
+    setActionError(null);
+    try {
+      const updated = { ...server, enabled: !server.enabled };
+      const res = await saveMCPServer(updated);
+      if (res.status === "error") {
+        setActionError(`Failed to connect to MCP server '${server.name}'. Verify interpreter and stdio script.`);
+      }
+      const s = await getMCPServers();
+      setMcpServers(s.servers || []);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to update MCP server");
+    } finally {
+      setMcpLoading(false);
+    }
+  };
+
+  const handleCallTool = async (toolName: string) => {
+    setCallingTool(toolName);
+    setToolResult(null);
+    try {
+      const res = await callMCPTool(toolName);
+      const text = res.content.map((c: any) => c.text).join("\n");
+      setToolResult({ tool: toolName, result: text, isError: res.is_error });
+    } catch (err: any) {
+      setToolResult({ tool: toolName, result: err.message || "Failed to call MCP tool", isError: true });
+    } finally {
+      setCallingTool(null);
     }
   };
 
@@ -345,13 +398,31 @@ export default function ToolsPage() {
       {waitingFor && (
         <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-200 text-sm flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin" />
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
             <span>
-              Google sign-in opened in your browser. Choose your account and click <strong>Allow</strong> for{" "}
+              {browserOpened ? (
+                <>Google sign-in opened in your browser. </>
+              ) : (
+                <>
+                  Browser did not open automatically.{" "}
+                  {authUrl && (
+                    <a
+                      href={authUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline font-bold text-sky-300 hover:text-white"
+                    >
+                      Click here to sign in
+                    </a>
+                  )}
+                  .{" "}
+                </>
+              )}
+              Choose your account and click <strong>Allow</strong> for{" "}
               {GOOGLE_APPS.find((a) => a.id === waitingFor)?.name}.
             </span>
           </div>
-          <button onClick={stopPolling} className="text-sky-300 hover:text-white">
+          <button onClick={stopPolling} className="text-sky-300 hover:text-white shrink-0">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -469,6 +540,139 @@ export default function ToolsPage() {
         </div>
       )}
 
+      {/* Workspace MCP Servers & Tools Hub */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-xl bg-teal-500/15 text-teal-400 flex items-center justify-center shrink-0">
+              <Terminal className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-semibold text-white text-base">Model Context Protocol (MCP) Hub</div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Standardized stdio JSON-RPC 2.0 tool servers providing classroom data to E.V.E.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={refresh}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 w-fit"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${mcpLoading ? "animate-spin" : ""}`} />
+            <span>Refresh MCP</span>
+          </button>
+        </div>
+
+        {/* Server list */}
+        <div className="space-y-3">
+          {mcpServers.length === 0 ? (
+            <p className="text-xs text-slate-500 py-2">No MCP servers registered yet.</p>
+          ) : (
+            mcpServers.map((server) => (
+              <div
+                key={server.name}
+                className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <span className="font-mono font-semibold text-white text-sm">{server.name}</span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                        server.connected
+                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          : server.enabled
+                          ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                          : "bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {server.connected ? "Connected" : server.enabled ? "Enabled (Connecting)" : "Disabled"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">{server.description}</p>
+                  <p className="text-[11px] text-slate-500 font-mono">
+                    Command: {server.command} {server.args?.join(" ")}
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-3 shrink-0">
+                  <button
+                    onClick={() => handleToggleServer(server)}
+                    disabled={mcpLoading}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      server.enabled
+                        ? "bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 border border-rose-500/30"
+                        : "bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30"
+                    }`}
+                  >
+                    {server.enabled ? "Disable Server" : "Enable Server"}
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Discovered MCP Tools */}
+        {mcpServers.some((s) => s.tools && s.tools.length > 0) && (
+          <div className="pt-2 space-y-3">
+            <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+              Discovered MCP Tools:
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {mcpServers.flatMap((s) => s.tools || []).map((t) => (
+                <div
+                  key={t.name}
+                  className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-col justify-between gap-3"
+                >
+                  <div>
+                    <span className="font-mono text-xs font-semibold text-teal-400">{t.name}</span>
+                    <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">{t.description}</p>
+                  </div>
+                  <button
+                    onClick={() => handleCallTool(t.name)}
+                    disabled={callingTool === t.name}
+                    className="w-full py-1.5 px-3 rounded-lg bg-teal-600/20 hover:bg-teal-600/30 text-teal-300 text-xs font-medium border border-teal-500/30 flex items-center justify-center gap-1.5"
+                  >
+                    {callingTool === t.name ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>Calling...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Wrench className="w-3 h-3" />
+                        <span>Test Call</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Tool Call Output View */}
+        {toolResult && (
+          <div
+            className={`p-4 rounded-xl border text-xs font-mono space-y-2 ${
+              toolResult.isError
+                ? "bg-rose-500/10 border-rose-500/30 text-rose-300"
+                : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+            }`}
+          >
+            <div className="flex items-center justify-between font-bold">
+              <span>Result: {toolResult.tool}</span>
+              <button onClick={() => setToolResult(null)} className="text-slate-400 hover:text-white">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <pre className="whitespace-pre-wrap text-[11px] max-h-48 overflow-y-auto bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
+              {toolResult.result}
+            </pre>
+          </div>
+        )}
+      </div>
+
       {status?.authenticated && (
         <div className="flex justify-end">
           <button
@@ -531,9 +735,15 @@ export default function ToolsPage() {
                 <input type="checkbox" checked={autoRecord} onChange={(e) => setAutoRecord(e.target.checked)} />
                 Record and transcribe the lecture when I join
               </label>
+              {autoRecord && (
+                <label className="flex items-center gap-2 text-xs text-slate-400 pl-2">
+                  <input type="checkbox" checked={meetConsent} onChange={(e) => setMeetConsent(e.target.checked)} />
+                  I confirm all participants are informed and consent to recording
+                </label>
+              )}
               <button
                 type="submit"
-                disabled={meetLoading || !meetUrl.trim()}
+                disabled={meetLoading || !meetUrl.trim() || (autoRecord && !meetConsent)}
                 className="w-full py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-sm font-semibold"
               >
                 {meetLoading ? "Opening Chrome..." : "Join Meet"}

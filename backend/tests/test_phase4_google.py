@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session as DBSession
 from sqlmodel import select
@@ -21,7 +20,7 @@ from eve.integrations.google import (
     save_refresh_token,
 )
 from eve.main import Components, create_app
-from eve.models import Course, Task
+from eve.models import Task
 
 
 def test_keyring_token_storage():
@@ -129,7 +128,6 @@ def test_calendar_sync_dedicated_calendar(tmp_path):
     mock_creds = MagicMock()
     mock_cal_api = MagicMock()
     mock_cal_list = MagicMock()
-    mock_calendars = MagicMock()
     mock_events = MagicMock()
 
     mock_cal_api.calendarList.return_value = mock_cal_list

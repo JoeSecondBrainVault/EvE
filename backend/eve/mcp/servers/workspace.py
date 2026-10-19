@@ -72,12 +72,13 @@ def _get_google_credentials() -> Any:
         return None
 
 
-def execute_classroom_assignments(args: dict[str, Any]) -> str:
+def execute_classroom_assignments(args: dict[str, Any]) -> tuple[str, bool]:
     creds = _get_google_credentials()
     if not creds:
         return (
             "Google account not logged in. Please click 'Connect Google' in the "
-            "E.V.E. Settings page to authenticate your student email."
+            "E.V.E. Settings page to authenticate your student email.",
+            True,
         )
 
     try:
@@ -107,16 +108,16 @@ def execute_classroom_assignments(args: dict[str, Any]) -> str:
                 due_str = f"{due.get('year')}-{due.get('month')}-{due.get('day')}" if due else "No deadline"
                 output_lines.append(f"  • {title} (Due: {due_str})")
 
-        return "\n".join(output_lines)
+        return "\n".join(output_lines), False
     except Exception as exc:
         logger.error("Error fetching classroom assignments: %s", exc)
-        return f"Error querying Google Classroom: {exc}"
+        return f"Error querying Google Classroom: {exc}", True
 
 
-def execute_calendar_events(args: dict[str, Any]) -> str:
+def execute_calendar_events(args: dict[str, Any]) -> tuple[str, bool]:
     creds = _get_google_credentials()
     if not creds:
-        return "Google account not logged in. Please log in on the E.V.E. Settings page."
+        return "Google account not logged in. Please log in on the E.V.E. Settings page.", True
 
     try:
         from googleapiclient.discovery import build
@@ -138,7 +139,7 @@ def execute_calendar_events(args: dict[str, Any]) -> str:
         )
         events = events_resp.get("items", [])
         if not events:
-            return "No upcoming calendar events found."
+            return "No upcoming calendar events found.", False
 
         output_lines = [f"Upcoming Google Calendar Events ({len(events)}):"]
         for ev in events:
@@ -146,16 +147,16 @@ def execute_calendar_events(args: dict[str, Any]) -> str:
             summary = ev.get("summary", "Untitled Event")
             output_lines.append(f"• {start} — {summary}")
 
-        return "\n".join(output_lines)
+        return "\n".join(output_lines), False
     except Exception as exc:
         logger.error("Error fetching calendar events: %s", exc)
-        return f"Error querying Google Calendar: {exc}"
+        return f"Error querying Google Calendar: {exc}", True
 
 
-def execute_unread_emails(args: dict[str, Any]) -> str:
+def execute_unread_emails(args: dict[str, Any]) -> tuple[str, bool]:
     creds = _get_google_credentials()
     if not creds:
-        return "Google account not logged in. Please log in on the E.V.E. Settings page."
+        return "Google account not logged in. Please log in on the E.V.E. Settings page.", True
 
     try:
         from googleapiclient.discovery import build
@@ -171,7 +172,7 @@ def execute_unread_emails(args: dict[str, Any]) -> str:
         )
         messages = list_resp.get("messages", [])
         if not messages:
-            return "No unread messages found in your Gmail inbox."
+            return "No unread messages found in your Gmail inbox.", False
 
         output_lines = [f"Recent Unread Emails ({len(messages)}):"]
         for m in messages:
@@ -187,10 +188,10 @@ def execute_unread_emails(args: dict[str, Any]) -> str:
                     sender = h["value"]
             output_lines.append(f"• From: {sender}\n  Subject: {subject}\n  Preview: {snippet[:100]}...\n")
 
-        return "\n".join(output_lines)
+        return "\n".join(output_lines), False
     except Exception as exc:
         logger.error("Error fetching unread emails: %s", exc)
-        return f"Error querying Gmail: {exc}"
+        return f"Error querying Gmail: {exc}", True
 
 
 def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
@@ -225,11 +226,11 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         arguments = params.get("arguments", {})
 
         if tool_name == "get_classroom_assignments":
-            text_result = execute_classroom_assignments(arguments)
+            text_result, is_error = execute_classroom_assignments(arguments)
         elif tool_name == "get_calendar_events":
-            text_result = execute_calendar_events(arguments)
+            text_result, is_error = execute_calendar_events(arguments)
         elif tool_name == "list_unread_emails":
-            text_result = execute_unread_emails(arguments)
+            text_result, is_error = execute_unread_emails(arguments)
         else:
             return {
                 "jsonrpc": "2.0",
@@ -244,7 +245,7 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "isError": False,
+                "isError": is_error,
                 "content": [{"type": "text", "text": text_result}],
             },
         }
@@ -269,6 +270,15 @@ def main() -> None:
             if resp is not None:
                 sys.stdout.write(json.dumps(resp) + "\n")
                 sys.stdout.flush()
+        except json.JSONDecodeError as exc:
+            logger.error("JSON parse error: %s", exc)
+            err_resp = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            }
+            sys.stdout.write(json.dumps(err_resp) + "\n")
+            sys.stdout.flush()
         except Exception as exc:
             logger.error("Error processing JSON-RPC message: %s", exc)
 

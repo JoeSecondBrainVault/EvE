@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import wave
 from typing import Any
 
 import numpy as np
-import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session as DBSession
 
 from eve.config import Settings
-from eve.events import EventBus
 from eve.llm.router import LLMRouter
 from eve.main import Components, create_app
-from eve.models import Note, QuizItem, Session, Task
+from eve.models import Task
 from eve.pipelines.copilot import CopilotItem, LiveCopilot
 from eve.voice.assistant import AssistantAction, VoiceAssistant
-from eve.voice.tts import TTSEngine, pcm_to_wav_bytes
+from eve.voice.tts import TTSEngine
 from eve.voice.wakeword import WakeWordDetector
 
 

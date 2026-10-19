@@ -1,7 +1,6 @@
 """Tests for Phase 2: LLM router, Obsidian publishing, relative date parsing, and tasks."""
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest

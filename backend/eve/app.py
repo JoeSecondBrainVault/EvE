@@ -142,12 +142,12 @@ def run_desktop_app(settings: Settings | None = None) -> None:
 
     # 2. Determine active dashboard URL
     port = find_active_dashboard_port()
-    dashboard_url = f"http://localhost:{port}?token={settings.api_token}"
+    dashboard_url = f"http://localhost:{port}"
 
     logger.info("Opening E.V.E. Desktop Application window at %s", dashboard_url)
 
     # 3. Create native desktop window
-    webview.create_window(
+    window = webview.create_window(
         title="E.V.E. — Extensible Virtual Entity",
         url=dashboard_url,
         width=1320,
@@ -162,9 +162,15 @@ def run_desktop_app(settings: Settings | None = None) -> None:
     icon_path = PROJECT_ROOT / "assets" / "eve.ico"
     icon_arg = str(icon_path) if icon_path.exists() else None
 
+    def on_window_ready() -> None:
+        try:
+            window.evaluate_js(f"localStorage.setItem('eve_api_token', '{settings.api_token}');")
+        except Exception:
+            pass
+
     # 5. Start native desktop event loop (blocking until window is closed)
     # Uses Edge WebView2 on Windows automatically
-    webview.start(private_mode=False, icon=icon_arg)
+    webview.start(on_window_ready, private_mode=False, icon=icon_arg)
 
 
 if __name__ == "__main__":

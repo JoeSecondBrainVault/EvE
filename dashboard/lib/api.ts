@@ -117,11 +117,20 @@ export interface SystemStatus {
 export function getStoredToken(): string {
   if (typeof window === "undefined") return "";
   try {
+    const existing = localStorage.getItem("eve_api_token") || "";
     const urlParams = new URLSearchParams(window.location.search);
     const urlToken = urlParams.get("token");
     if (urlToken && urlToken.trim()) {
-      localStorage.setItem("eve_api_token", urlToken.trim());
-      return urlToken.trim();
+      const cleanToken = urlToken.trim();
+      // Protect existing valid tokens from malicious link overwrites (S4)
+      if (!existing) {
+        localStorage.setItem("eve_api_token", cleanToken);
+      }
+      // Immediately strip the ?token= query parameter from URL bar to prevent leakage in history/logs (S3)
+      const url = new URL(window.location.href);
+      url.searchParams.delete("token");
+      window.history.replaceState({}, document.title, url.pathname + (url.search ? url.search : "") + url.hash);
+      return existing || cleanToken;
     }
   } catch {
     // ignore
@@ -135,24 +144,14 @@ export function setStoredToken(token: string): void {
   }
 }
 
-export async function ensureToken(): Promise<string> {
-  if (typeof window === "undefined") return "";
-  let token = getStoredToken();
-  if (!token) {
-    try {
-      const res = await fetch("/api/token");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.token) {
-          token = data.token;
-          setStoredToken(token);
-        }
-      }
-    } catch {
-      // ignore
-    }
+export function clearStoredToken(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("eve_api_token");
   }
-  return token || "";
+}
+
+export async function ensureToken(): Promise<string> {
+  return getStoredToken();
 }
 
 export async function fetchAPI<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -565,7 +564,8 @@ export async function getChromeProfiles(): Promise<{ profiles: ChromeProfile[] }
 export async function launchGoogleMeet(
   meet_url_or_code: string,
   email_or_profile?: string,
-  auto_record: boolean = true
+  auto_record: boolean = true,
+  consent_confirmed: boolean = false
 ): Promise<MeetLaunchResult> {
   return fetchAPI<MeetLaunchResult>("/api/integrations/meet/launch", {
     method: "POST",
@@ -573,6 +573,7 @@ export async function launchGoogleMeet(
       meet_url_or_code,
       email_or_profile: email_or_profile || null,
       auto_record,
+      consent_confirmed,
     }),
   });
 }

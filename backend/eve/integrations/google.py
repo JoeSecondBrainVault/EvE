@@ -34,6 +34,8 @@ CLASSROOM_COURSEWORK_READONLY = "https://www.googleapis.com/auth/classroom.cours
 # calendar.app.created = create secondary calendars + manage events ONLY on calendars E.V.E. created.
 CALENDAR_APP_CREATED = "https://www.googleapis.com/auth/calendar.app.created"
 CALENDAR_LIST_READONLY = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+CALENDAR_EVENTS_READONLY = "https://www.googleapis.com/auth/calendar.events.readonly"
+GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 DOCS_READONLY = "https://www.googleapis.com/auth/documents.readonly"
 DRIVE_METADATA_READONLY = "https://www.googleapis.com/auth/drive.metadata.readonly"
 DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
@@ -43,10 +45,11 @@ IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
 # Each classroom app asks Google only for the permissions it needs (incremental authorization).
 APP_SCOPES: dict[str, list[str]] = {
     "classroom": [CLASSROOM_COURSES_READONLY, CLASSROOM_COURSEWORK_READONLY],
-    "calendar": [CALENDAR_APP_CREATED, CALENDAR_LIST_READONLY],
+    "calendar": [CALENDAR_APP_CREATED, CALENDAR_LIST_READONLY, CALENDAR_EVENTS_READONLY],
     "docs": [DOCS_READONLY, DRIVE_METADATA_READONLY],
     "drive": [DRIVE_READONLY],
     "meet": [MEET_SPACE_CREATED],
+    "gmail": [GMAIL_READONLY],
 }
 
 SCOPES = [s for scopes in APP_SCOPES.values() for s in scopes]

@@ -47,6 +47,7 @@ export default function OverviewPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasToken, setHasToken] = useState(true);
+  const [authError, setAuthError] = useState(false);
 
   // Launcher tab mode: "meet" or "manual"
   const [launcherMode, setLauncherMode] = useState<"meet" | "manual">("meet");
@@ -55,6 +56,7 @@ export default function OverviewPage() {
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [meetUrl, setMeetUrl] = useState("");
+  const [meetConsent, setMeetConsent] = useState(true);
   const [meetLoading, setMeetLoading] = useState(false);
   const [meetError, setMeetError] = useState<string | null>(null);
 
@@ -80,19 +82,24 @@ export default function OverviewPage() {
     }
     setHasToken(true);
     try {
-      const [sData, sessData, tData, profData] = await Promise.all([
-        getStats().catch(() => null),
+      const sData = await getStats();
+      setAuthError(false);
+      if (sData) setStats(sData);
+      const [sessData, tData, profData] = await Promise.all([
         getSessions().catch(() => []),
         getTasks().catch(() => []),
         getChromeProfiles().catch(() => ({ profiles: [] })),
       ]);
-      if (sData) setStats(sData);
       setSessions(sessData.slice(0, 5));
       setTasks(tData.filter(t => t.status === "inbox" || t.status === "todo").slice(0, 6));
       setProfiles(profData.profiles);
       if (profData.profiles.length > 0 && !selectedProfile) {
         const withEmail = profData.profiles.find(p => p.email.includes("@"));
         setSelectedProfile(withEmail ? withEmail.email : profData.profiles[0].email);
+      }
+    } catch (err: any) {
+      if (err?.message?.includes("401") || err?.message?.includes("token")) {
+        setAuthError(true);
       }
     } finally {
       setLoading(false);
@@ -111,7 +118,7 @@ export default function OverviewPage() {
     setMeetLoading(true);
     setMeetError(null);
     try {
-      await launchGoogleMeet(meetUrl.trim(), selectedProfile || undefined, true);
+      await launchGoogleMeet(meetUrl.trim(), selectedProfile || undefined, true, meetConsent);
       router.push("/live");
     } catch (err: any) {
       setMeetError(err.message || "Failed to launch Google Meet");
@@ -182,6 +189,27 @@ export default function OverviewPage() {
             className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold transition-colors shrink-0 text-center"
           >
             Configure Token
+          </Link>
+        </div>
+      )}
+
+      {/* Invalid Token 401 Banner */}
+      {authError && (
+        <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-rose-300">Authentication Failed (401 Unauthorized)</p>
+              <p className="text-xs text-rose-200/90 mt-0.5">
+                Your stored API token is invalid or expired. Update it in Settings to access sessions, tasks, and stats.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/settings"
+            className="px-4 py-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-white text-xs font-semibold transition-colors shrink-0 text-center"
+          >
+            Update Token
           </Link>
         </div>
       )}
@@ -368,9 +396,22 @@ export default function OverviewPage() {
                     />
                   </div>
 
+                  <div className="flex items-center space-x-2 pt-1 pb-1">
+                    <input
+                      type="checkbox"
+                      id="meetConsentCheck"
+                      checked={meetConsent}
+                      onChange={(e) => setMeetConsent(e.target.checked)}
+                      className="rounded bg-slate-950 border-slate-700 text-rose-500 focus:ring-0"
+                    />
+                    <label htmlFor="meetConsentCheck" className="text-xs text-slate-300">
+                      I confirm all participants are informed and consent to lecture recording
+                    </label>
+                  </div>
+
                   <button
                     type="submit"
-                    disabled={meetLoading || !meetUrl.trim()}
+                    disabled={meetLoading || !meetUrl.trim() || !meetConsent}
                     className="w-full py-2.5 px-4 rounded-lg bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 disabled:opacity-50 text-white font-semibold text-sm transition-all flex items-center justify-center space-x-2 shadow-lg shadow-rose-600/20"
                   >
                     <Video className="w-4 h-4 fill-current" />

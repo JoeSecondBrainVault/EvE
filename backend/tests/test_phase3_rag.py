@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
 
 import numpy as np
-import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session as DBSession
-from sqlmodel import select
 
 from conftest import EnergyVAD, FakeSTT
 from eve.config import Settings
 from eve.db import make_engine
-from eve.events import EventBus
 from eve.main import Components, create_app
-from eve.models import Chunk, Course, Flashcard, QuizItem, Segment, Session, Task
+from eve.models import Course, Segment, Session, Task
 from eve.rag.chat import HybridRAGSearcher, format_seconds
 from eve.rag.embeddings import EmbeddingEngine
 from eve.rag.index import chunk_session_segments, index_session_chunks

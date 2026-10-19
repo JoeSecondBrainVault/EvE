@@ -90,7 +90,7 @@ class SessionManager:
         return active.session_id if active else None
 
     # ------------------------------------------------------------------ lifecycle
-    def start(self, *, title: str, course: str | None = None, consent_confirmed: bool = True) -> Session:
+    def start(self, *, title: str, course: str | None = None, consent_confirmed: bool = False) -> Session:
         if not consent_confirmed:
             raise SessionError("Recording requires confirming that participants are informed.")
         stt = self._stt()

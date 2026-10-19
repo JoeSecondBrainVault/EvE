@@ -13,11 +13,11 @@ import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlmodel import Session as DBSession, col, desc, select
+from sqlmodel import Session as DBSession, col, select
 
 from eve.config import Settings, get_settings
 from eve.llm.router import LLMRouter
-from eve.models import Note, QuizItem, Session, Task
+from eve.models import Course, Note, QuizItem, Session, Task
 from eve.voice.tts import TTSEngine
 
 logger = logging.getLogger(__name__)
@@ -284,7 +284,6 @@ class VoiceAssistant:
     def _tool_quiz_me(self, course: str | None = None) -> dict[str, Any]:
         import json
         import random
-        from eve.models import Course, Session
 
         with DBSession(self.engine) as db:
             if course:
@@ -296,7 +295,11 @@ class VoiceAssistant:
                 )
                 items = db.exec(query.limit(20)).all()
                 if not items:
-                    items = db.exec(select(QuizItem).limit(20)).all()
+                    return {
+                        "has_items": False,
+                        "message": f"No quiz items found for course '{course.strip()}'. Record or process a lecture for this course first!",
+                        "course": course.strip(),
+                    }
             else:
                 items = db.exec(select(QuizItem).limit(20)).all()
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from sqlalchemy.engine import Engine
 from sqlmodel import Session as DBSession
@@ -95,10 +94,14 @@ def process_session_pipeline(
 
     # 4. Save metadata, tasks, flashcards, and quiz items into database
     with DBSession(engine) as db:
+        # Preserve existing tasks for this session so manual status changes (todo/doing/done) are never lost
+        existing_tasks = db.exec(select(Task).where(Task.session_id == session_id)).all()
+        existing_task_map: dict[str, Task] = {
+            t.title.strip().lower(): t for t in existing_tasks
+        }
+
         # Save or update Note record - clean up prior artifacts to prevent duplicates on re-processing
         for existing in db.exec(select(Note).where(Note.session_id == session_id)).all():
-            db.delete(existing)
-        for existing in db.exec(select(Task).where(Task.session_id == session_id)).all():
             db.delete(existing)
         for existing in db.exec(select(Flashcard).where(Flashcard.session_id == session_id)).all():
             db.delete(existing)
@@ -116,22 +119,38 @@ def process_session_pipeline(
         )
         db.add(note_row)
 
-        # Save Tasks
+        # Upsert Tasks, preserving existing manual status
+        seen_titles: set[str] = set()
         for t in tasks:
+            norm_title = t.title.strip().lower()
+            seen_titles.add(norm_title)
             due_dt = parse_relative_deadline(t.due_phrase, session.started_at)
-            # Route low confidence or unverified deadlines to 'inbox' for manual confirmation
             initial_status = "todo" if (t.confidence >= 0.7 and due_dt is not None) else "inbox"
-            task_row = Task(
-                session_id=session_id,
-                title=t.title,
-                due_date=due_dt,
-                status=initial_status,
-                priority=t.priority,
-                course_name=course_name,
-                evidence=t.evidence,
-                confidence=t.confidence,
-            )
-            db.add(task_row)
+
+            if norm_title in existing_task_map:
+                existing_row = existing_task_map[norm_title]
+                existing_row.due_date = due_dt or existing_row.due_date
+                existing_row.priority = t.priority
+                existing_row.evidence = t.evidence
+                existing_row.confidence = t.confidence
+                db.add(existing_row)
+            else:
+                task_row = Task(
+                    session_id=session_id,
+                    title=t.title,
+                    due_date=due_dt,
+                    status=initial_status,
+                    priority=t.priority,
+                    course_name=course_name,
+                    evidence=t.evidence,
+                    confidence=t.confidence,
+                )
+                db.add(task_row)
+
+        # Clean up existing tasks that are no longer in the extraction AND were untouched in inbox
+        for norm_title, old_task in existing_task_map.items():
+            if norm_title not in seen_titles and old_task.status == "inbox":
+                db.delete(old_task)
 
         # Save Flashcards
         for fc in analysis.flashcards:

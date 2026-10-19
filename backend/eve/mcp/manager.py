@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from eve.config import Settings, get_settings
@@ -26,11 +25,13 @@ class MCPManager:
     def _ensure_default_config(self) -> None:
         """Creates a sample mcp_servers.json if none exists."""
         if not self.config_file.exists():
+            import sys
+
             default_config = {
                 "servers": [
                     {
                         "name": "google_workspace",
-                        "command": "python",
+                        "command": sys.executable,
                         "args": ["-m", "eve.mcp.servers.workspace"],
                         "enabled": False,
                         "description": "Google Classroom, Gmail, Calendar MCP tools",
@@ -132,6 +133,9 @@ class MCPManager:
                 client = MCPClient(config)
                 if client.connect():
                     self._clients[config.name] = client
+                else:
+                    logger.warning("Failed to connect to MCP server '%s'", config.name)
+                    return False
             return True
         except Exception as exc:
             logger.error("Failed to save server config: %s", exc)

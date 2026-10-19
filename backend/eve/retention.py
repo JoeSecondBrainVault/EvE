@@ -13,8 +13,6 @@ import threading
 import time
 from pathlib import Path
 
-from eve.config import Settings, get_settings
-
 logger = logging.getLogger(__name__)
 
 

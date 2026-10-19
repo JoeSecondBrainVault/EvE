@@ -61,11 +61,11 @@ class SystemTray:
                 try:
                     req = urllib.request.Request(f"http://localhost:{port}", headers={"User-Agent": "EVE-Check"})
                     with urllib.request.urlopen(req, timeout=0.5):  # nosec B310
-                        webbrowser.open(f"http://localhost:{port}?token={self.settings.api_token}")
+                        webbrowser.open(f"http://localhost:{port}")
                         return
                 except Exception:
                     pass
-            webbrowser.open(f"http://localhost:3001?token={self.settings.api_token}")
+            webbrowser.open("http://localhost:3001")
 
         self.on_open_dashboard = on_open_dashboard or _open_dashboard_auto
         self.on_sync_google = on_sync_google

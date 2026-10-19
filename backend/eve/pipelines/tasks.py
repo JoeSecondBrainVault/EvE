@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime, time, timedelta
-from typing import Any
 
 from eve.llm.prompts import (
     TASK_SYSTEM_PROMPT,

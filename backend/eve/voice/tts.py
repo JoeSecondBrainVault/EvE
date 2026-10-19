@@ -10,7 +10,6 @@ import io
 import logging
 import threading
 import wave
-from pathlib import Path
 from typing import Any
 
 import numpy as np

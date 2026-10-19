@@ -11,11 +11,11 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession
 from sqlmodel import col, select
@@ -211,6 +211,7 @@ class StatsOut(BaseModel):
 class GoogleExchangeIn(BaseModel):
     code: str
     redirect_uri: str
+    state: str | None = None
 
 
 class GoogleConnectIn(BaseModel):
@@ -254,6 +255,7 @@ class MeetLaunchIn(BaseModel):
     meet_url_or_code: str = Field(min_length=1, max_length=500)
     email_or_profile: str | None = None
     auto_record: bool = True
+    consent_confirmed: bool = False
 
 
 class AppLaunchIn(BaseModel):
@@ -487,7 +489,7 @@ def create_app(settings: Settings | None = None, components: Components | None =
     def root() -> RedirectResponse:
         from eve.app import is_service_ready
         port = 3001 if is_service_ready("http://localhost:3001") else 3000
-        return RedirectResponse(url=f"http://localhost:{port}?token={settings.api_token}")
+        return RedirectResponse(url=f"http://localhost:{port}")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -497,8 +499,9 @@ def create_app(settings: Settings | None = None, components: Components | None =
     def status(request: Request) -> dict[str, Any]:
         st = request.app.state
         has_cloud = getattr(st.router, "has_cloud", False) if st.router else False
+        dev = getattr(st.stt, "device", None) or getattr(settings, "whisper_device", "auto")
         return {"version": __version__, "model": st.model_status,
-                "device": getattr(st.stt, "device", None),
+                "device": dev,
                 "active_session_id": st.manager.active_session_id,
                 "live_clients": st.bus.subscriber_count,
                 "has_cloud_llm": has_cloud}
@@ -886,13 +889,17 @@ def create_app(settings: Settings | None = None, components: Components | None =
     def google_exchange(body: GoogleExchangeIn) -> dict[str, Any]:
         from eve.integrations.google import GoogleAuthManager, save_refresh_token
 
-        pending = next(
-            (v for v in sorted(oauth_pending.values(), key=lambda v: v["created"], reverse=True)
-             if v["redirect_uri"] == body.redirect_uri),
-            None,
-        )
-        if pending is None:
-            raise HTTPException(status_code=400, detail="No pending Google sign-in for this redirect URI.")
+        match_key = None
+        if body.state and body.state in oauth_pending:
+            match_key = body.state
+        else:
+            for k, v in sorted(oauth_pending.items(), key=lambda item: item[1]["created"], reverse=True):
+                if v["redirect_uri"] == body.redirect_uri:
+                    match_key = k
+                    break
+        if match_key is None:
+            raise HTTPException(status_code=400, detail="No pending Google sign-in for this redirect URI or expired state.")
+        pending = oauth_pending.pop(match_key)
         mgr = GoogleAuthManager(settings)
         try:
             flow = mgr.get_flow(body.redirect_uri, scopes=pending["scopes"], code_verifier=pending["verifier"])
@@ -1204,17 +1211,21 @@ def create_app(settings: Settings | None = None, components: Components | None =
 
         res = launch_meet_in_chrome(body.meet_url_or_code, body.email_or_profile)
         if body.auto_record and request.app.state.manager:
-            try:
-                session = request.app.state.manager.start(
-                    title=f"Google Meet ({res.get('email', 'Class')})",
-                    course=None,
-                    consent_confirmed=True,
-                )
-                res["session_id"] = session.id
-                res["recording"] = True
-            except Exception as exc:
-                log.warning("Auto-recording Google Meet session failed: %s", exc)
-                res["recording_error"] = str(exc)
+            if not body.consent_confirmed:
+                res["recording"] = False
+                res["recording_error"] = "Recording requires confirming that participants are informed."
+            else:
+                try:
+                    session = request.app.state.manager.start(
+                        title=f"Google Meet ({res.get('email', 'Class')})",
+                        course=None,
+                        consent_confirmed=True,
+                    )
+                    res["session_id"] = session.id
+                    res["recording"] = True
+                except Exception as exc:
+                    log.warning("Auto-recording Google Meet session failed: %s", exc)
+                    res["recording_error"] = str(exc)
         return res
 
     @app.post("/api/integrations/apps/launch", dependencies=auth)
@@ -1230,35 +1241,70 @@ def create_app(settings: Settings | None = None, components: Components | None =
     @app.post("/api/mcp/servers", dependencies=auth)
     def save_mcp_server(body: MCPServerConfig, request: Request) -> dict[str, Any]:
         check_rate_limit(request)
+        import shutil
         import sys
         from pathlib import Path
 
-        cmd_path = Path(body.command)
-        cmd_name = cmd_path.name.lower()
-        if cmd_name.endswith((".exe", ".cmd", ".bat")):
-            base_cmd = cmd_name.rsplit(".", 1)[0]
-        else:
-            base_cmd = cmd_name
+        # 1. Strictly validate command executable
+        cmd_str = body.command.strip()
+        cmd_path = Path(cmd_str)
+        is_allowed_cmd = False
 
-        allowed_binaries = {"python", "python3", "node", "npx", "uv", "uvx"}
-        is_allowed = False
-        if base_cmd in allowed_binaries:
-            is_allowed = True
-        else:
+        if len(cmd_path.parts) > 1 or cmd_path.is_absolute():
             try:
                 resolved_cmd = cmd_path.resolve()
-                if resolved_cmd == Path(sys.executable).resolve() or resolved_cmd.is_relative_to(Path(sys.prefix).resolve()):
-                    is_allowed = True
+                venv_prefix = Path(sys.prefix).resolve()
+                sys_exe = Path(sys.executable).resolve()
+                if resolved_cmd == sys_exe or resolved_cmd.is_relative_to(venv_prefix):
+                    is_allowed_cmd = True
             except Exception:
-                is_allowed = False
+                is_allowed_cmd = False
+        else:
+            base_name = cmd_str.lower()
+            if base_name in ("python", "python3", "python.exe"):
+                is_allowed_cmd = True
+                body.command = sys.executable
+            elif base_name in ("node", "node.exe"):
+                is_allowed_cmd = shutil.which(cmd_str) is not None
+            elif base_name in ("uv", "uv.exe"):
+                is_allowed_cmd = shutil.which(cmd_str) is not None
 
-        if not is_allowed:
+        if not is_allowed_cmd:
             raise HTTPException(
                 status_code=400,
-                detail=f"Disallowed command runtime: {body.command}. Allowed runtimes: python, node, npx, uv, uvx.",
+                detail=f"Disallowed command runtime: '{body.command}'. Only the current Python virtualenv or validated runtimes are permitted.",
             )
 
+        # 2. Strictly validate arguments to prevent arbitrary code execution
+        dangerous_flags = {
+            "-c", "--command", "-e", "--eval", "/c", "/k", "-r", "--require",
+            "--input-type", "-i", "--interactive",
+        }
+        disallowed_chars = {";", "&", "|", "<", ">", "`", "$", "\n", "\r"}
+
+        for arg in body.args:
+            arg_clean = arg.strip()
+            if arg_clean.lower() in dangerous_flags:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Disallowed execution argument: '{arg}'. Inline code evaluation flags are prohibited.",
+                )
+            if any(ch in arg_clean for ch in disallowed_chars):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Command arguments cannot contain shell metacharacters (; & | < > ` $).",
+                )
+
+        if body.args and body.args[0] == "-m":
+            if len(body.args) < 2 or not body.args[1].startswith("eve.mcp.servers."):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Python MCP servers launched with '-m' must target approved modules in 'eve.mcp.servers.*'.",
+                )
+
         success = request.app.state.mcp.save_server(body)
+        if not success and body.enabled:
+            return {"status": "error", "message": "Failed to connect to MCP server stdio process."}
         return {"status": "ok" if success else "error"}
 
     @app.get("/api/mcp/tools", dependencies=auth)

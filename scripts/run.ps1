@@ -60,10 +60,9 @@ switch ($Mode) {
         $dashDir = Join-Path $ProjectRoot "dashboard"
         $tokenFile = Join-Path $ProjectRoot "data\api_token"
         $tokenVal = if (Test-Path $tokenFile) { (Get-Content $tokenFile -Raw).Trim() } else { "" }
+        Write-Output "[E.V.E.] Dashboard URL: http://localhost:3000"
         if ($tokenVal -ne "") {
-            Write-Output "[E.V.E.] Dashboard URL: http://localhost:3000?token=$tokenVal"
-        } else {
-            Write-Output "[E.V.E.] Launching Next.js Dashboard on http://localhost:3000..."
+            Write-Output "[E.V.E.] Local API Token: $tokenVal"
         }
         Push-Location $dashDir
         try {

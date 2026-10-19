@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { 
+  AlertCircle,
   Radio, 
   BookOpen, 
   CheckSquare, 
@@ -21,6 +22,7 @@ import { getStatus, ensureToken, SystemStatus } from "@/lib/api";
 export default function Navbar() {
   const pathname = usePathname();
   const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -28,9 +30,18 @@ export default function Navbar() {
       try {
         await ensureToken();
         const s = await getStatus();
-        if (mounted) setStatus(s);
-      } catch {
-        // Backend might be offline
+        if (mounted) {
+          setStatus(s);
+          setAuthError(false);
+        }
+      } catch (err: any) {
+        if (mounted) {
+          const msg = err?.message || "";
+          if (msg.includes("401") || msg.includes("token")) {
+            setAuthError(true);
+            setStatus(null);
+          }
+        }
       }
     };
     fetchStatus();
@@ -108,6 +119,22 @@ export default function Navbar() {
         })}
       </nav>
 
+      {/* Invalid Token Alert Banner */}
+      {authError && (
+        <div className="mx-3 mb-2 p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs space-y-1">
+          <div className="flex items-center space-x-1.5 font-bold text-rose-400">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>Invalid API Token</span>
+          </div>
+          <p className="text-[11px] text-rose-200/90 leading-tight">
+            Backend returned 401 Unauthorized.
+          </p>
+          <Link href="/settings" className="inline-block pt-1 text-[11px] text-rose-400 hover:text-white underline font-medium">
+            Update in Settings →
+          </Link>
+        </div>
+      )}
+
       {/* System Hardware & Model Status Footnote */}
       <div className="p-4 border-t border-slate-800 bg-slate-950/40 text-xs space-y-2">
         <div className="flex items-center justify-between text-slate-400">
@@ -116,9 +143,13 @@ export default function Navbar() {
             <span>STT Model:</span>
           </span>
           <span className={`font-mono text-[11px] px-1.5 py-0.5 rounded ${
-            status?.model === "ready" ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
+            authError
+              ? "bg-rose-500/10 text-rose-400"
+              : status?.model === "ready"
+              ? "bg-emerald-500/10 text-emerald-400"
+              : "bg-amber-500/10 text-amber-400"
           }`}>
-            {status?.model || "Connecting..."}
+            {authError ? "Auth Error (401)" : (status?.model || "Connecting...")}
           </span>
         </div>
 

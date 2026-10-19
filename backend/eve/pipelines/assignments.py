@@ -132,7 +132,6 @@ class AssignmentHelper:
             raise ValueError("Assignment text or prompt cannot be empty.")
 
         # 1. Hybrid RAG retrieval of relevant lecture concepts
-        rag_citations: list[dict[str, Any]] = []
         rag_context = ""
         try:
             from eve.rag.chat import HybridRAGSearcher

@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from eve.config import Settings
 from eve.db import make_engine
-from eve.events import EventBus
 from eve.main import Components, create_app
 from eve.pipelines.assignments import (
     ACADEMIC_INTEGRITY_NOTICE,

@@ -47,8 +47,10 @@ def require_token(request: Request) -> None:
         if scheme.lower() == "bearer":
             provided = bearer_val.strip()
     if not provided:
-        # Fallback to query param (e.g. for HTML5 audio streaming where custom headers cannot be set)
-        provided = request.query_params.get("token")
+        # Fallback to query param ONLY for HTML5 audio streaming where custom headers cannot be set
+        path = request.url.path
+        if path.startswith("/api/sessions/") and "/audio/" in path:
+            provided = request.query_params.get("token")
 
     if not provided or not token_matches(request.app.state.api_token, provided):
         raise HTTPException(

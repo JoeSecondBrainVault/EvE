@@ -16,9 +16,20 @@ log = logging.getLogger(__name__)
 _SAFE_CHAR = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
+WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def safe_filename(name: str, fallback: str = "untitled") -> str:
     cleaned = _SAFE_CHAR.sub("", name).strip(" .")
-    return cleaned[:100] or fallback
+    res = cleaned[:100] or fallback
+    base = res.split(".")[0].upper()
+    if base in WIN_RESERVED:
+        res = f"Note-{res}"
+    return res
 
 
 def format_seconds(s: float) -> str:
@@ -55,8 +66,17 @@ class ObsidianPublisher:
 
         session_date = session.started_at.strftime("%Y-%m-%d")
         title_clean = safe_filename(analysis.title or session.title, fallback="Session")
-        filename = f"{session_date} - {title_clean}.md"
-        target_path = course_dir / filename
+        base_name = f"{session_date} - {title_clean}"
+        target_path = course_dir / f"{base_name}.md"
+
+        # Disambiguate collision if same-day file belongs to a different session
+        if target_path.exists():
+            try:
+                existing_text = target_path.read_text(encoding="utf-8")
+                if f"session_id: {session.id}" not in existing_text:
+                    target_path = course_dir / f"{base_name} (Session {session.id}).md"
+            except Exception:
+                target_path = course_dir / f"{base_name} (Session {session.id}).md"
 
         # Double check target path containment
         if not target_path.resolve().is_relative_to(self.vault_path):
