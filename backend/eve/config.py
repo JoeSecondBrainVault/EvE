@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     cloud_transcribe: bool = True
 
     # --- obsidian integration (Phase 2) ---
-    vault_path: Path = Path(r"C:\Users\Legion\Documents\Obsidian Vault")
+    vault_path: Path = Path.home() / "Documents" / "Obsidian Vault"
     lecture_folder: str = "13 - Lectures"
 
     # --- RAG & embeddings (Phase 3) ---

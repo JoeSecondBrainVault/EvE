@@ -37,7 +37,7 @@ def cmd_devices(_: argparse.Namespace) -> None:
         print(f"[{dev['index']:>3}] {tag:<8} {dev['name']}{default}  {dev['default_sample_rate']:.0f} Hz")
 
 
-async def _live(args: argparse.Namespace) -> None:
+async def _live(args: argparse.Namespace, consent_confirmed: bool = False) -> None:
     from eve.db import make_engine
     from eve.events import EventBus
     from eve.main import default_components
@@ -53,7 +53,7 @@ async def _live(args: argparse.Namespace) -> None:
     manager = SessionManager(s, make_engine(s.db_path), bus, stt=lambda: stt,
                              capture_factory=comps.capture_factory(s), vad_factory=comps.vad_factory)
     async with bus.subscribe() as queue:
-        row = manager.start(title=args.title, course=args.course, consent_confirmed=True)
+        row = manager.start(title=args.title, course=args.course, consent_confirmed=consent_confirmed)
         print(f"Recording session #{row.id}. Speak or play audio. Press Ctrl+C to stop.\n")
         try:
             while True:
@@ -72,13 +72,15 @@ async def _live(args: argparse.Namespace) -> None:
 
 
 def cmd_live(args: argparse.Namespace) -> None:
-    if not args.yes:
+    consent = getattr(args, "yes", False)
+    if not consent:
         answer = input("Have all participants been told this session is being recorded? [y/N] ")
         if answer.strip().lower() not in {"y", "yes", "oo", "o"}:
             print("Cancelled. E.V.E. only records with consent.")
             return
+        consent = True
     try:
-        asyncio.run(_live(args))
+        asyncio.run(_live(args, consent_confirmed=consent))
     except KeyboardInterrupt:
         pass
 
@@ -95,6 +97,28 @@ def cmd_tray(_: argparse.Namespace) -> None:
     api_url = f"http://{s.host}:{s.port}"
 
     def _start():
+        consent = False
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                # MB_YESNO = 0x04, MB_ICONQUESTION = 0x20
+                res = ctypes.windll.user32.MessageBoxW(
+                    0,
+                    "Recording Consent Required:\n\nDo all lecture/meeting participants consent to being recorded?",
+                    "E.V.E. Recording Consent",
+                    0x04 | 0x20,
+                )
+                consent = res == 6  # IDYES = 6
+            except Exception:
+                consent = False
+        else:
+            consent = True
+
+        if not consent:
+            print("Recording cancelled: Participant consent was not confirmed.")
+            return
+
         try:
             req = urllib.request.Request(
                 f"{api_url}/api/sessions/start",

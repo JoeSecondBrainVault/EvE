@@ -96,15 +96,25 @@ def test_voice_assistant_meet_clarification(tmp_path: Path) -> None:
             session_obj.id = 99
             mock_session_mgr.start.return_value = session_obj
 
+            # Without consent -> recording skipped
+            res_noconsent = assistant._tool_join_google_meet({
+                "meet_url_or_code": "abc-defg-hij",
+                "email_or_profile": "student@ustp.edu.ph",
+            })
+            assert res_noconsent["status"] == "launched"
+            assert res_noconsent["recording"] is False
+
+            # With consent -> recording started
             res = assistant._tool_join_google_meet({
                 "meet_url_or_code": "abc-defg-hij",
                 "email_or_profile": "student@ustp.edu.ph",
+                "consent_confirmed": True,
             })
             assert res["status"] == "launched"
             assert res["recording"] is True
             assert res["session_id"] == 99
-            mock_popen.assert_called_once()
             mock_session_mgr.start.assert_called_once()
+            assert mock_popen.call_count == 2
 
 
 def test_voice_assistant_safe_apps_allowlist(tmp_path: Path) -> None:
@@ -141,7 +151,7 @@ def test_mcp_manager_config_and_tool_call(tmp_path: Path) -> None:
     new_cfg = MCPServerConfig(
         name="test_server",
         command="python",
-        args=["-c", "print('hello')"],
+        args=["-m", "eve.mcp.servers.workspace"],
         enabled=False,
         description="Test server",
     )
@@ -236,6 +246,29 @@ def test_api_desktop_and_mcp_endpoints(tmp_path: Path) -> None:
         resp_safe = client.post("/api/mcp/servers", json=safe_mcp, headers=headers)
         assert resp_safe.status_code == 200
         assert resp_safe.json()["status"] == "ok"
+
+        # Verify all S2 injection vectors (glued flags, script paths, extra args, unknown modules) are rejected with 400
+        for bad_args in [
+            ["-c__import__('os').system('calc')"],
+            ["-Ic", "print('hello')"],
+            ["/tmp/eve_v3_script.py"],
+            ["-m", "eve.mcp.servers.nonexistent_module"],
+            ["-m", "eve.mcp.servers.workspace", "--extra-arg"],
+        ]:
+            resp_bad = client.post(
+                "/api/mcp/servers",
+                json={"name": "bypass_test", "command": "python", "args": bad_args, "enabled": False},
+                headers=headers,
+            )
+            assert resp_bad.status_code == 400
+
+        # Node runtime is rejected with 400
+        resp_node = client.post(
+            "/api/mcp/servers",
+            json={"name": "node_test", "command": "node", "args": ["-p", "process.exit()"], "enabled": False},
+            headers=headers,
+        )
+        assert resp_node.status_code == 400
 
         # 6. Chat search top_k bounded validation (Bug 23 fix)
         resp_too_high = client.get("/api/chat/search?q=test&top_k=99999", headers=headers)

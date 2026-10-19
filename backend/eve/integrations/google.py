@@ -436,3 +436,31 @@ class GoogleIntegrationService:
         except Exception as exc:  # noqa: BLE001
             log.exception("Google Meet space creation failed: %s", exc)
             return {"status": "error", "message": str(exc)}
+
+    def list_unread_emails(self, creds: Credentials, limit: int = 5) -> dict[str, Any]:
+        """List recent unread emails (metadata only)."""
+        try:
+            gmail = build("gmail", "v1", credentials=creds, cache_discovery=False)
+            res = gmail.users().messages().list(userId="me", q="is:unread", maxResults=limit).execute()
+            messages = res.get("messages", [])
+            items = []
+            for m in messages:
+                detail = (
+                    gmail.users()
+                    .messages()
+                    .get(userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject", "From", "Date"])
+                    .execute()
+                )
+                headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+                items.append({
+                    "id": m["id"],
+                    "subject": headers.get("Subject", "(No subject)"),
+                    "from": headers.get("From", "(Unknown sender)"),
+                    "date": headers.get("Date", ""),
+                    "snippet": detail.get("snippet", ""),
+                })
+            return {"status": "ok", "messages": items}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Gmail listing failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+

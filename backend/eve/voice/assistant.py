@@ -191,6 +191,12 @@ class VoiceAssistant:
     def _tool_start_session(self, args: dict[str, Any]) -> dict[str, Any]:
         title = args.get("title") or "Voice Started Lecture"
         course = args.get("course")
+        consent = bool(args.get("consent_confirmed", False))
+        if not consent:
+            return {
+                "status": "consent_required",
+                "message": "Recording consent is required. Please confirm that all meeting/lecture participants have consented to recording.",
+            }
         if self.session_manager:
             session = self.session_manager.start(title=title, course=course, consent_confirmed=True)
             return {"status": "started", "session_id": session.id, "title": session.title}
@@ -355,18 +361,23 @@ class VoiceAssistant:
             }
 
         res = launch_meet_in_chrome(meet_url, email)
+        consent = bool(args.get("consent_confirmed", False))
         if self.session_manager:
-            try:
-                session = self.session_manager.start(
-                    title=f"Google Meet Lecture ({res.get('email', email)})",
-                    course=None,
-                    consent_confirmed=True,
-                )
-                res["session_id"] = session.id
-                res["recording"] = True
-            except Exception as exc:
-                logger.warning("Could not auto-start recording session: %s", exc)
-                res["recording_error"] = str(exc)
+            if consent:
+                try:
+                    session = self.session_manager.start(
+                        title=f"Google Meet Lecture ({res.get('email', email)})",
+                        course=None,
+                        consent_confirmed=True,
+                    )
+                    res["session_id"] = session.id
+                    res["recording"] = True
+                except Exception as exc:
+                    logger.warning("Could not auto-start recording session: %s", exc)
+                    res["recording_error"] = str(exc)
+            else:
+                res["recording"] = False
+                res["recording_notice"] = "Auto-recording skipped: participant consent was not confirmed."
 
         return res
 

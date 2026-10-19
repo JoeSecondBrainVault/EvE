@@ -14,6 +14,7 @@ import {
   KeyRound,
   Loader2,
   LogOut,
+  Mail,
   RefreshCw,
   Terminal,
   Upload,
@@ -96,6 +97,15 @@ const GOOGLE_APPS: ClassroomApp[] = [
     actionLabel: "Push deadlines",
     icon: Calendar,
     tint: "bg-rose-500/15 text-rose-400",
+  },
+  {
+    id: "gmail",
+    name: "Gmail",
+    description: "Read unread classroom and instructor email updates securely.",
+    permission: "View your email messages and settings (read-only, never sends).",
+    actionLabel: "List unread emails",
+    icon: Mail,
+    tint: "bg-red-500/15 text-red-400",
   },
 ];
 
@@ -789,6 +799,26 @@ function ActionResultView({ app, data }: { app: GoogleAppId; data: Record<string
           </a>
         )}
       </div>
+    );
+  }
+  if (app === "gmail") {
+    const messages: Array<{ id: string; subject: string; from: string; date: string; snippet: string }> = data.messages || [];
+    if (messages.length === 0) {
+      return <div className="text-xs text-slate-400 bg-slate-950 rounded-lg p-2.5">No unread emails found.</div>;
+    }
+    return (
+      <ul className="text-xs bg-slate-950 rounded-lg p-2 space-y-1.5 max-h-48 overflow-y-auto divide-y divide-slate-800">
+        {messages.map((m) => (
+          <li key={m.id} className="pt-1.5 first:pt-0 space-y-0.5">
+            <div className="flex items-center justify-between text-slate-200">
+              <span className="font-semibold truncate">{m.subject}</span>
+              <span className="text-[10px] text-slate-500 shrink-0">{m.date}</span>
+            </div>
+            <p className="text-[11px] text-slate-400 truncate">From: {m.from}</p>
+            {m.snippet && <p className="text-[10px] text-slate-500 line-clamp-1">{m.snippet}</p>}
+          </li>
+        ))}
+      </ul>
     );
   }
   const files: Array<{ id: string; name: string; webViewLink?: string; modifiedTime?: string }> = data.files || [];

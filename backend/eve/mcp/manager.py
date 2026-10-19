@@ -110,6 +110,23 @@ class MCPManager:
     def save_server(self, config: MCPServerConfig) -> bool:
         """Adds or updates an MCP server configuration and synchronizes connection state."""
         try:
+            # 1. If enabling, verify connection first before persisting to disk (N18 fix)
+            new_client: MCPClient | None = None
+            if config.enabled:
+                new_client = MCPClient(config)
+                if not new_client.connect():
+                    logger.warning("Failed to connect to MCP server '%s'", config.name)
+                    return False
+
+            # 2. Connection verified or server disabled: update runtime client
+            if config.name in self._clients:
+                self._clients[config.name].disconnect()
+                del self._clients[config.name]
+
+            if new_client is not None:
+                self._clients[config.name] = new_client
+
+            # 3. Persist valid configuration to disk only after successful verification
             data = {"servers": []}
             if self.config_file.exists():
                 data = json.loads(self.config_file.read_text(encoding="utf-8"))
@@ -124,18 +141,6 @@ class MCPManager:
                 servers.append(config.model_dump())
             data["servers"] = servers
             self.config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-            # Update client runtime connection
-            if config.name in self._clients:
-                self._clients[config.name].disconnect()
-                del self._clients[config.name]
-            if config.enabled:
-                client = MCPClient(config)
-                if client.connect():
-                    self._clients[config.name] = client
-                else:
-                    logger.warning("Failed to connect to MCP server '%s'", config.name)
-                    return False
             return True
         except Exception as exc:
             logger.error("Failed to save server config: %s", exc)

@@ -95,7 +95,6 @@ class SystemTray:
         def _wrap_start(icon: Any, item: Any) -> None:
             if self.on_start_session:
                 self.on_start_session()
-            self.set_state("recording")
 
         def _wrap_stop(icon: Any, item: Any) -> None:
             self.set_state("processing")

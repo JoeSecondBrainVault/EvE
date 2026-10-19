@@ -138,6 +138,27 @@ def test_voice_assistant_tool_dispatching(tmp_path):
     assert len(resp2.tool_output["tasks"]) == 1
     assert "Submit Lab 4" in resp2.response_text
 
+    # 3. Test start_session consent gating
+    action3 = AssistantAction(
+        tool="start_session",
+        arguments={"title": "Math Lecture"},
+        spoken_response="Starting session...",
+    )
+    router3 = FakeAssistantRouter(settings, action=action3)
+    assistant3 = VoiceAssistant(db_engine, router3, settings)
+    resp3 = assistant3.process_command("Start recording Math Lecture", synthesize_audio=False)
+    assert resp3.tool_output["status"] == "consent_required"
+
+    action4 = AssistantAction(
+        tool="start_session",
+        arguments={"title": "Math Lecture", "consent_confirmed": True},
+        spoken_response="Starting session...",
+    )
+    router4 = FakeAssistantRouter(settings, action=action4)
+    assistant4 = VoiceAssistant(db_engine, router4, settings)
+    resp4 = assistant4.process_command("Start recording Math Lecture with consent", synthesize_audio=False)
+    assert resp4.tool_output["status"] == "simulated_started"
+
 
 # --- Test Live Copilot Rolling Window ---
 def test_live_copilot_rolling_window(tmp_path):

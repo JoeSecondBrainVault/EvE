@@ -215,7 +215,7 @@ class GoogleExchangeIn(BaseModel):
 
 
 class GoogleConnectIn(BaseModel):
-    app: str = Field(pattern=r"^(classroom|calendar|docs|drive|meet)$")
+    app: str = Field(pattern=r"^(classroom|calendar|docs|drive|meet|gmail)$")
 
 
 class GoogleClientSecretIn(BaseModel):
@@ -504,7 +504,8 @@ def create_app(settings: Settings | None = None, components: Components | None =
                 "device": dev,
                 "active_session_id": st.manager.active_session_id,
                 "live_clients": st.bus.subscriber_count,
-                "has_cloud_llm": has_cloud}
+                "has_cloud_llm": has_cloud,
+                "vault_path": str(settings.vault_path)}
 
     @app.get("/api/devices", dependencies=auth)
     def devices() -> list[dict[str, Any]]:
@@ -861,6 +862,8 @@ def create_app(settings: Settings | None = None, components: Components | None =
             return service.list_recent_docs(creds)
         if app_name == "drive":
             return service.list_recent_drive_files(creds)
+        if app_name == "gmail":
+            return service.list_unread_emails(creds)
         return service.create_meet_space(creds)
 
     @app.post("/api/integrations/google/client-secret", dependencies=auth)
@@ -1241,11 +1244,18 @@ def create_app(settings: Settings | None = None, components: Components | None =
     @app.post("/api/mcp/servers", dependencies=auth)
     def save_mcp_server(body: MCPServerConfig, request: Request) -> dict[str, Any]:
         check_rate_limit(request)
-        import shutil
+        import re
         import sys
         from pathlib import Path
 
-        # 1. Strictly validate command executable
+        # Validate server name: alphanumeric, dashes, underscores
+        if not re.match(r"^[a-zA-Z0-9_-]{1,64}$", body.name):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid server name. Must contain only alphanumeric characters, dashes, or underscores.",
+            )
+
+        # 1. Strictly validate command runtime: ONLY Python executable
         cmd_str = body.command.strip()
         cmd_path = Path(cmd_str)
         is_allowed_cmd = False
@@ -1253,10 +1263,11 @@ def create_app(settings: Settings | None = None, components: Components | None =
         if len(cmd_path.parts) > 1 or cmd_path.is_absolute():
             try:
                 resolved_cmd = cmd_path.resolve()
-                venv_prefix = Path(sys.prefix).resolve()
                 sys_exe = Path(sys.executable).resolve()
+                venv_prefix = Path(sys.prefix).resolve()
                 if resolved_cmd == sys_exe or resolved_cmd.is_relative_to(venv_prefix):
                     is_allowed_cmd = True
+                    body.command = sys.executable
             except Exception:
                 is_allowed_cmd = False
         else:
@@ -1264,43 +1275,38 @@ def create_app(settings: Settings | None = None, components: Components | None =
             if base_name in ("python", "python3", "python.exe"):
                 is_allowed_cmd = True
                 body.command = sys.executable
-            elif base_name in ("node", "node.exe"):
-                is_allowed_cmd = shutil.which(cmd_str) is not None
-            elif base_name in ("uv", "uv.exe"):
-                is_allowed_cmd = shutil.which(cmd_str) is not None
 
         if not is_allowed_cmd:
             raise HTTPException(
                 status_code=400,
-                detail=f"Disallowed command runtime: '{body.command}'. Only the current Python virtualenv or validated runtimes are permitted.",
+                detail=f"Disallowed command runtime: '{body.command}'. Only the active Python virtualenv is permitted.",
             )
 
-        # 2. Strictly validate arguments to prevent arbitrary code execution
-        dangerous_flags = {
-            "-c", "--command", "-e", "--eval", "/c", "/k", "-r", "--require",
-            "--input-type", "-i", "--interactive",
-        }
-        disallowed_chars = {";", "&", "|", "<", ">", "`", "$", "\n", "\r"}
+        # 2. Pin args strictly to app-shipped modules in eve.mcp.servers: ["-m", "eve.mcp.servers.<module>"]
+        # Reject any other arguments, scripts, glued flags, or options.
+        if (
+            len(body.args) != 2
+            or body.args[0] != "-m"
+            or not body.args[1].startswith("eve.mcp.servers.")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Disallowed arguments. MCP servers must strictly use '-m eve.mcp.servers.<module_name>' without additional flags or script paths.",
+            )
 
-        for arg in body.args:
-            arg_clean = arg.strip()
-            if arg_clean.lower() in dangerous_flags:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Disallowed execution argument: '{arg}'. Inline code evaluation flags are prohibited.",
-                )
-            if any(ch in arg_clean for ch in disallowed_chars):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Command arguments cannot contain shell metacharacters (; & | < > ` $).",
-                )
+        module_name = body.args[1][len("eve.mcp.servers."):]
+        if not re.match(r"^[a-zA-Z0-9_]+$", module_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid module target: '{body.args[1]}'.",
+            )
 
-        if body.args and body.args[0] == "-m":
-            if len(body.args) < 2 or not body.args[1].startswith("eve.mcp.servers."):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Python MCP servers launched with '-m' must target approved modules in 'eve.mcp.servers.*'.",
-                )
+        server_py = Path(__file__).parent / "mcp" / "servers" / f"{module_name}.py"
+        if not server_py.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown MCP server module: '{body.args[1]}'.",
+            )
 
         success = request.app.state.mcp.save_server(body)
         if not success and body.enabled:

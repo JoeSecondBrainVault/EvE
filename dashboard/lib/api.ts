@@ -112,6 +112,7 @@ export interface SystemStatus {
   active_session_id: number | null;
   live_clients: number;
   has_cloud_llm: boolean;
+  vault_path?: string;
 }
 
 export function getStoredToken(): string {
@@ -344,7 +345,7 @@ export async function disconnectGoogle(): Promise<{ status: string; message: str
   });
 }
 
-export type GoogleAppId = "classroom" | "calendar" | "docs" | "drive" | "meet";
+export type GoogleAppId = "classroom" | "calendar" | "docs" | "drive" | "meet" | "gmail";
 
 export interface GoogleAppsStatus {
   configured: boolean;

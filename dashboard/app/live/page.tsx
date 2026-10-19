@@ -75,6 +75,10 @@ export default function LiveCaptionsPage() {
     getCopilotRecent().then((res) => {
       if (res.suggestion) setCopilotSuggestion(res.suggestion);
     }).catch(() => {});
+    try {
+      const saved = localStorage.getItem("eve_live_bookmarks");
+      if (saved) setBookmarks(JSON.parse(saved));
+    } catch {}
   }, []);
 
   // Timer
@@ -133,6 +137,9 @@ export default function LiveCaptionsPage() {
   const handleStop = async () => {
     if (!confirm("Stop recording this session? Post-processing will automatically extract notes, tasks, and flashcards.")) return;
     setStopping(true);
+    try {
+      localStorage.removeItem("eve_live_bookmarks");
+    } catch {}
     try {
       const res = await stopSession();
       const sid = res.id ?? res.session_id;
@@ -205,7 +212,13 @@ export default function LiveCaptionsPage() {
   });
 
   const addBookmark = () => {
-    setBookmarks((prev) => [...prev, elapsedSeconds]);
+    setBookmarks((prev) => {
+      const updated = [...prev, elapsedSeconds];
+      try {
+        localStorage.setItem("eve_live_bookmarks", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
   };
 
   return (
@@ -350,6 +363,8 @@ export default function LiveCaptionsPage() {
             <button
               onClick={() => setCopilotOpen(!copilotOpen)}
               className="text-slate-400 hover:text-white"
+              aria-label={copilotOpen ? "Collapse Live Copilot" : "Expand Live Copilot"}
+              title={copilotOpen ? "Collapse Live Copilot" : "Expand Live Copilot"}
             >
               {copilotOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>

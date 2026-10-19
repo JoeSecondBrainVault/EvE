@@ -409,7 +409,7 @@ export default function SettingsPage() {
                     ? "Groq LPU (300+ tok/s)"
                     : apiKeys?.active_provider === "gemini"
                     ? "Gemini 2.5 Flash"
-                    : "Local Offline (Ollama 7B)"}
+                    : "Local Offline LLM"}
                 </span>
               </span>
             </div>
@@ -597,7 +597,7 @@ export default function SettingsPage() {
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Vault Path:</span>
-              <span className="font-mono text-slate-200">C:\Users\Legion\Documents\Obsidian Vault</span>
+              <span className="font-mono text-slate-200">{status?.vault_path || "~/Documents/Obsidian Vault"}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Lecture Notes Folder:</span>
