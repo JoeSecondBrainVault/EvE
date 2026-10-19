@@ -97,10 +97,17 @@ def cmd_tray(_: argparse.Namespace) -> None:
         tray.stop()
 
 
+def cmd_app(_: argparse.Namespace) -> None:
+    from eve.app import run_desktop_app
+
+    run_desktop_app()
+
+
 def main(argv: list[str] | None = None) -> None:
     _configure_console()
     parser = argparse.ArgumentParser(prog="eve", description="E.V.E. personal AI assistant")
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("app", help="launch E.V.E. native desktop application").set_defaults(func=cmd_app)
     sub.add_parser("serve", help="run the local API (default)").set_defaults(func=cmd_serve)
     sub.add_parser("devices", help="list audio devices").set_defaults(func=cmd_devices)
     sub.add_parser("tray", help="run system tray icon").set_defaults(func=cmd_tray)
@@ -110,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
     live.add_argument("--yes", action="store_true", help="skip the consent prompt (you confirm consent)")
     live.set_defaults(func=cmd_live)
     args = parser.parse_args(argv)
-    (args.func if hasattr(args, "func") else cmd_serve)(args)
+    (args.func if hasattr(args, "func") else cmd_app)(args)
 
 
 if __name__ == "__main__":

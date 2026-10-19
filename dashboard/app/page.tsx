@@ -14,7 +14,13 @@ import {
   Layers, 
   FileText,
   Calendar,
-  Sparkles
+  Sparkles,
+  Video,
+  ExternalLink,
+  FolderOpen,
+  FileCode,
+  Terminal,
+  Command
 } from "lucide-react";
 import { 
   getStats, 
@@ -23,6 +29,10 @@ import {
   startSession, 
   stopSession, 
   updateTaskStatus, 
+  getChromeProfiles,
+  launchGoogleMeet,
+  launchDesktopApp,
+  ChromeProfile,
   Stats, 
   Session, 
   Task 
@@ -35,7 +45,20 @@ export default function OverviewPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // New session form state
+  // Launcher tab mode: "meet" or "manual"
+  const [launcherMode, setLauncherMode] = useState<"meet" | "manual">("meet");
+
+  // Google Meet launcher state
+  const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState<string>("");
+  const [meetUrl, setMeetUrl] = useState("");
+  const [meetLoading, setMeetLoading] = useState(false);
+  const [meetError, setMeetError] = useState<string | null>(null);
+
+  // Desktop apps launcher status
+  const [appStatus, setAppStatus] = useState<Record<string, string>>({});
+
+  // New session form state (manual)
   const [title, setTitle] = useState("");
   const [course, setCourse] = useState("");
   const [consent, setConsent] = useState(true);
@@ -44,14 +67,20 @@ export default function OverviewPage() {
 
   const loadData = async () => {
     try {
-      const [sData, sessData, tData] = await Promise.all([
+      const [sData, sessData, tData, profData] = await Promise.all([
         getStats().catch(() => null),
         getSessions().catch(() => []),
         getTasks().catch(() => []),
+        getChromeProfiles().catch(() => ({ profiles: [] })),
       ]);
       if (sData) setStats(sData);
       setSessions(sessData.slice(0, 5));
       setTasks(tData.filter(t => t.status === "inbox" || t.status === "todo").slice(0, 6));
+      setProfiles(profData.profiles);
+      if (profData.profiles.length > 0 && !selectedProfile) {
+        const withEmail = profData.profiles.find(p => p.email.includes("@"));
+        setSelectedProfile(withEmail ? withEmail.email : profData.profiles[0].email);
+      }
     } finally {
       setLoading(false);
     }
@@ -62,6 +91,37 @@ export default function OverviewPage() {
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleLaunchMeet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!meetUrl.trim()) return;
+    setMeetLoading(true);
+    setMeetError(null);
+    try {
+      await launchGoogleMeet(meetUrl.trim(), selectedProfile || undefined, true);
+      router.push("/live");
+    } catch (err: any) {
+      setMeetError(err.message || "Failed to launch Google Meet");
+      setMeetLoading(false);
+    }
+  };
+
+  const handleQuickApp = async (appId: string) => {
+    setAppStatus(prev => ({ ...prev, [appId]: "launching" }));
+    try {
+      const res = await launchDesktopApp(appId);
+      if (res.status === "opened") {
+        setAppStatus(prev => ({ ...prev, [appId]: "opened" }));
+      } else {
+        setAppStatus(prev => ({ ...prev, [appId]: "error" }));
+      }
+    } catch {
+      setAppStatus(prev => ({ ...prev, [appId]: "error" }));
+    }
+    setTimeout(() => {
+      setAppStatus(prev => ({ ...prev, [appId]: "" }));
+    }, 3000);
+  };
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,6 +137,7 @@ export default function OverviewPage() {
       setStarting(false);
     }
   };
+
 
   const activeSession = sessions.find(s => s.status === "recording");
 
@@ -189,72 +250,216 @@ export default function OverviewPage() {
               </div>
             </div>
           ) : (
-            <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm">
-              <h2 className="text-lg font-bold text-white flex items-center space-x-2">
-                <span>Start New Lecture Session</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">
-                E.V.E. records PC audio (Zoom, Google Meet, Teams, YouTube) and your mic locally.
-              </p>
-
-              {actionError && (
-                <div className="mt-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
-                  {actionError}
+            <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-5">
+              {/* Launcher Header & Tabs */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                    <span>Launch Study Session</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Record PC audio & mic locally with local Whisper transcription.
+                  </p>
                 </div>
+
+                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setLauncherMode("meet")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center space-x-1.5 ${
+                      launcherMode === "meet"
+                        ? "bg-rose-500 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    <span>Google Meet</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLauncherMode("manual")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center space-x-1.5 ${
+                      launcherMode === "manual"
+                        ? "bg-emerald-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Manual Rec</span>
+                  </button>
+                </div>
+              </div>
+
+              {launcherMode === "meet" ? (
+                /* Google Meet Quick Join Form */
+                <form onSubmit={handleLaunchMeet} className="space-y-4">
+                  {meetError && (
+                    <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center space-x-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{meetError}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                      Select Google Account
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {profiles.map((p) => {
+                        const isSelected = selectedProfile === p.email;
+                        return (
+                          <button
+                            type="button"
+                            key={p.directory}
+                            onClick={() => setSelectedProfile(p.email)}
+                            className={`text-left p-2.5 rounded-lg border transition-all text-xs ${
+                              isSelected
+                                ? "bg-rose-500/10 border-rose-500 text-white shadow-sm"
+                                : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800/40 hover:text-slate-200"
+                            }`}
+                          >
+                            <div className="font-semibold truncate">{p.name || p.directory}</div>
+                            <div className="text-[11px] text-slate-400 font-mono truncate">{p.email}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                      Google Meet URL or Code
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. meet.google.com/abc-defg-hij or abc-defg-hij"
+                      value={meetUrl}
+                      onChange={(e) => setMeetUrl(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-rose-500 transition-colors font-mono"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={meetLoading || !meetUrl.trim()}
+                    className="w-full py-2.5 px-4 rounded-lg bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 disabled:opacity-50 text-white font-semibold text-sm transition-all flex items-center justify-center space-x-2 shadow-lg shadow-rose-600/20"
+                  >
+                    <Video className="w-4 h-4 fill-current" />
+                    <span>{meetLoading ? "Launching Chrome..." : "Join Meet & Auto-Record Lecture"}</span>
+                  </button>
+                </form>
+              ) : (
+                /* Manual Recording Form */
+                <form onSubmit={handleStart} className="space-y-4">
+                  {actionError && (
+                    <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+                      {actionError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                      Lecture Title
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Subnetting & CIDR Notation"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                      Course / Subject (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. IT 222 Networking"
+                      value={course}
+                      onChange={(e) => setCourse(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div className="flex items-center space-x-2 pt-1">
+                    <input
+                      type="checkbox"
+                      id="consent"
+                      checked={consent}
+                      onChange={(e) => setConsent(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0"
+                    />
+                    <label htmlFor="consent" className="text-xs text-slate-400 cursor-pointer">
+                      I confirm that meeting / lecture participants are informed of this recording.
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={starting || !consent}
+                    className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm transition-colors flex items-center justify-center space-x-2 shadow-lg shadow-emerald-600/20"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    <span>{starting ? "Starting..." : "Start Lecture Recording"}</span>
+                  </button>
+                </form>
               )}
-
-              <form onSubmit={handleStart} className="mt-5 space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                    Lecture Title
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Subnetting & CIDR Notation"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                    Course / Subject (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. IT 222 Networking"
-                    value={course}
-                    onChange={(e) => setCourse(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                  />
-                </div>
-
-                <div className="flex items-center space-x-2 pt-1">
-                  <input
-                    type="checkbox"
-                    id="consent"
-                    checked={consent}
-                    onChange={(e) => setConsent(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0"
-                  />
-                  <label htmlFor="consent" className="text-xs text-slate-400 cursor-pointer">
-                    I confirm that meeting / lecture participants are informed of this recording.
-                  </label>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={starting || !consent}
-                  className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm transition-colors flex items-center justify-center space-x-2 shadow-lg shadow-emerald-600/20"
-                >
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>{starting ? "Starting..." : "Start Lecture Recording"}</span>
-                </button>
-              </form>
             </div>
           )}
+
+          {/* Desktop Computer Quick Launch Card */}
+          <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                  <span>Desktop Control</span>
+                </h2>
+                <p className="text-xs text-slate-400">Tactile desktop application launcher</p>
+              </div>
+              <Link href="/tools" className="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
+                MCP Tools Hub &rarr;
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {[
+                { id: "obsidian", name: "Obsidian", desc: "Second Brain", icon: FolderOpen, color: "text-purple-400" },
+                { id: "code", name: "VS Code", desc: "Editor", icon: FileCode, color: "text-blue-400" },
+                { id: "chrome", name: "Chrome", desc: "Browser", icon: ExternalLink, color: "text-emerald-400" },
+                { id: "terminal", name: "Terminal", desc: "CLI", icon: Terminal, color: "text-slate-300" },
+                { id: "calculator", name: "Calculator", desc: "Math", icon: Command, color: "text-amber-400" },
+                { id: "explorer", name: "Explorer", desc: "Files", icon: FolderOpen, color: "text-sky-400" },
+              ].map((app) => {
+                const Icon = app.icon;
+                const status = appStatus[app.id];
+                return (
+                  <button
+                    key={app.id}
+                    onClick={() => handleQuickApp(app.id)}
+                    className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 hover:border-slate-700 hover:bg-slate-800/40 transition-all text-left group"
+                  >
+                    <div className="flex items-center justify-between">
+                      <Icon className={`w-4 h-4 ${app.color} group-hover:scale-110 transition-transform`} />
+                      <span className="text-[10px] font-mono text-slate-500">
+                        {status === "launching" ? "..." : status === "opened" ? "✓" : ""}
+                      </span>
+                    </div>
+                    <div className="mt-2">
+                      <div className="text-xs font-semibold text-slate-200 group-hover:text-white transition-colors">
+                        {app.name}
+                      </div>
+                      <div className="text-[10px] text-slate-500">{app.desc}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
 
           {/* Recent Lectures */}
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">

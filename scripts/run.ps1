@@ -1,15 +1,22 @@
 # E.V.E. Runtime Launcher (Windows PowerShell 5.1 / 7+ compatible, 7-bit ASCII)
 param(
-    [ValidateSet("serve", "devices", "live", "dashboard", "tray")]
-    [string]$Mode = "serve",
+    [ValidateSet("app", "serve", "devices", "live", "dashboard", "tray")]
+    [string]$Mode = "app",
     [string]$Title = "Lecture Session",
     [string]$Course = "",
-    [switch]$StartOllama
+    [switch]$StartOllama,
+    [switch]$CreateShortcut
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
+
+# If requested, create Windows Desktop and Start Menu shortcuts
+if ($CreateShortcut) {
+    & (Join-Path $PSScriptRoot "create_desktop_shortcut.ps1") -AddToStartMenu
+    exit 0
+}
 
 $venvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
@@ -34,6 +41,10 @@ if ($StartOllama) {
 
 # Run selected E.V.E. mode
 switch ($Mode) {
+    "app" {
+        Write-Output "[E.V.E.] Launching Native Windows Desktop App..."
+        & $venvPython -m eve app
+    }
     "devices" {
         Write-Output "[E.V.E.] Audio Devices:"
         & $venvPython -m eve devices

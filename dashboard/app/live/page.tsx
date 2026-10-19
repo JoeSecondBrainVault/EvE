@@ -406,12 +406,42 @@ export default function LiveCaptionsPage() {
 
               {/* Voice Command feedback if any */}
               {voiceReply && (
-                <div className="p-3 rounded-xl bg-sky-950/20 border border-sky-800/40 space-y-1 text-xs">
+                <div className="p-3.5 rounded-xl bg-sky-950/20 border border-sky-800/40 space-y-2 text-xs">
                   <div className="flex items-center space-x-1.5 text-sky-400 font-semibold text-[11px]">
                     <Mic className="w-3 h-3" />
-                    <span>E.V.E. Spoken Reply</span>
+                    <span>E.V.E. Assistant Response</span>
                   </div>
                   <p className="text-slate-200">{voiceReply.response_text}</p>
+
+                  {/* Interactive Account Clarification Chips */}
+                  {voiceReply.tool_output?.status === "clarification_needed" && voiceReply.tool_output?.available_emails && (
+                    <div className="pt-2 border-t border-sky-900/40 space-y-1.5">
+                      <div className="text-[11px] text-slate-400 font-medium">Click an account to join with:</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {voiceReply.tool_output.available_emails.map((email: string) => (
+                          <button
+                            key={email}
+                            type="button"
+                            onClick={async () => {
+                              const meetCode = voiceReply.tool_output?.meet_url || "";
+                              setVoiceLoading(true);
+                              try {
+                                const rep = await interactVoice(`join google meet ${meetCode} with ${email}`);
+                                setVoiceReply(rep);
+                              } catch (err: any) {
+                                alert("Failed to join: " + err.message);
+                              } finally {
+                                setVoiceLoading(false);
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-sky-900/60 hover:bg-sky-800 text-sky-200 border border-sky-700/60 font-mono text-[11px] transition-colors"
+                          >
+                            {email}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

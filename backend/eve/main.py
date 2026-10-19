@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession
 from sqlmodel import col, select
@@ -239,6 +239,34 @@ class AssignmentAnalyzeIn(BaseModel):
     course: str | None = None
 
 
+class MeetLaunchIn(BaseModel):
+    meet_url_or_code: str = Field(min_length=1, max_length=500)
+    email_or_profile: str | None = None
+    auto_record: bool = True
+
+
+class AppLaunchIn(BaseModel):
+    app_name: str = Field(min_length=1, max_length=100)
+
+
+class MCPCallIn(BaseModel):
+    tool_name: str = Field(min_length=1, max_length=100)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class APIKeysUpdateIn(BaseModel):
+    groq_api_key: str | None = None
+    gemini_api_key: str | None = None
+
+
+def _mask_key(key: str | None) -> str | None:
+    if not key or len(key) < 8:
+        return None
+    return f"{key[:6]}••••••••{key[-4:]}"
+
+
+
+
 
 def _session_out(row: Session, course_name: str | None) -> dict[str, Any]:
     return {"id": row.id, "title": row.title, "course": course_name, "status": row.status,
@@ -329,11 +357,14 @@ def create_app(settings: Settings | None = None, components: Components | None =
             try:
                 app.state.stt = components.load_stt(settings)
                 app.state.model_status = "ready"
-                app.state.bus.publish({"type": "status", "model": "ready", "device": app.state.stt.device})
+                with contextlib.suppress(RuntimeError, ValueError):
+                    app.state.bus.publish({"type": "status", "model": "ready", "device": app.state.stt.device})
             except Exception as exc:  # noqa: BLE001
                 log.exception("Speech model failed to load")
                 app.state.model_status = "error"
-                app.state.bus.publish({"type": "status", "model": "error", "message": str(exc)[:300]})
+                with contextlib.suppress(RuntimeError, ValueError):
+                    app.state.bus.publish({"type": "status", "model": "error", "message": str(exc)[:300]})
+
 
         loader = threading.Thread(target=load_model, name="stt-loader", daemon=True)
         loader.start()
@@ -384,12 +415,23 @@ def create_app(settings: Settings | None = None, components: Components | None =
             except Exception as exc:  # noqa: BLE001
                 log.debug("System tray startup skipped: %s", exc)
 
+        # Initialize MCP Manager (Google Classroom, Gmail, Calendar, Custom Tools)
+        from eve.mcp.manager import MCPManager
+
+        app.state.mcp = MCPManager(settings)
+        try:
+            app.state.mcp.load_servers()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("MCP server initial load skipped: %s", exc)
+
         yield
         listener_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await listener_task
         if getattr(app.state, "tray", None):
             app.state.tray.stop()
+        if getattr(app.state, "mcp", None):
+            app.state.mcp.shutdown()
         app.state.scheduler.stop()
         await asyncio.to_thread(app.state.manager.shutdown)
         app.state.engine.dispose()
@@ -415,6 +457,10 @@ def create_app(settings: Settings | None = None, components: Components | None =
                     status_code=429,
                     detail="Rate limit exceeded. Please wait a moment before sending more requests.",
                 )
+
+    @app.get("/")
+    def root() -> RedirectResponse:
+        return RedirectResponse(url="http://localhost:3001")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -702,7 +748,96 @@ def create_app(settings: Settings | None = None, components: Components | None =
         clear_refresh_token()
         return {"status": "ok", "message": "Google refresh token cleared from Windows Credential Manager."}
 
+    @app.get("/api/integrations/google/callback")
+    def google_callback(code: str = Query(...)) -> Response:
+        from eve.integrations.google import GoogleAuthManager, save_refresh_token
+
+        mgr = GoogleAuthManager(settings)
+        flow = mgr.get_flow("http://127.0.0.1:8765/api/integrations/google/callback")
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        if creds.refresh_token:
+            save_refresh_token(creds.refresh_token)
+            from eve.mcp.models import MCPServerConfig
+
+            ws_cfg = MCPServerConfig(
+                name="google_workspace",
+                command="python",
+                args=["-m", "eve.mcp.servers.workspace"],
+                enabled=True,
+                description="Google Classroom, Gmail, Calendar MCP tools",
+            )
+            app.state.mcp.save_server(ws_cfg)
+        return RedirectResponse(url="http://localhost:3001/settings?google=connected")
+
+    # ---------------------------------------------------------------- Settings & API Keys Management
+    @app.get("/api/settings/keys", dependencies=auth)
+    def get_api_keys(request: Request) -> dict[str, Any]:
+        gemini_key = settings.resolved_gemini_api_key
+        groq_key = settings.resolved_groq_api_key
+        router = request.app.state.router
+        active_provider = "ollama"
+        if getattr(router, "_groq_client", None) is not None:
+            active_provider = "groq"
+        elif getattr(router, "_gemini_client", None) is not None:
+            active_provider = "gemini"
+
+        return {
+            "gemini": {
+                "configured": bool(gemini_key),
+                "masked": _mask_key(gemini_key),
+                "model": settings.gemini_model,
+            },
+            "groq": {
+                "configured": bool(groq_key),
+                "masked": _mask_key(groq_key),
+                "model": settings.groq_model,
+            },
+            "active_provider": active_provider,
+            "has_cloud": router.has_cloud if router else False,
+        }
+
+    @app.post("/api/settings/keys", dependencies=auth)
+    def update_api_keys(body: APIKeysUpdateIn, request: Request) -> dict[str, Any]:
+        check_rate_limit(request)
+        import os
+        import dotenv
+        from eve.config import PROJECT_ROOT
+
+        env_path = PROJECT_ROOT / ".env"
+        if not env_path.exists():
+            env_path.touch()
+
+        updated_items = []
+
+        if body.groq_api_key is not None:
+            val = body.groq_api_key.strip()
+            if val:
+                dotenv.set_key(str(env_path), "GROQ_API_KEY", val)
+                os.environ["GROQ_API_KEY"] = val
+                settings.groq_api_key = val
+                updated_items.append("Groq")
+
+        if body.gemini_api_key is not None:
+            val = body.gemini_api_key.strip()
+            if val:
+                dotenv.set_key(str(env_path), "GEMINI_API_KEY", val)
+                os.environ["GEMINI_API_KEY"] = val
+                settings.gemini_api_key = val
+                updated_items.append("Gemini")
+
+        if request.app.state.router:
+            request.app.state.router.reload_clients()
+
+        return {
+            "status": "ok",
+            "message": f"Updated and activated: {', '.join(updated_items) if updated_items else 'No changes'}",
+            "groq_configured": bool(settings.resolved_groq_api_key),
+            "gemini_configured": bool(settings.resolved_gemini_api_key),
+        }
+
     # ---------------------------------------------------------------- Phase 5: Voice Assistant & Live Copilot
+
     @app.get("/api/voice/status", dependencies=auth)
     def voice_status(request: Request) -> dict[str, Any]:
         st = request.app.state
@@ -818,7 +953,65 @@ def create_app(settings: Settings | None = None, components: Components | None =
             "retention_days": settings.retention_days,
         }
 
+    # ---------------------------------------------------------------- Desktop, Google Meet, & MCP Integrations
+    @app.get("/api/integrations/chrome/profiles", dependencies=auth)
+    def get_chrome_profiles() -> dict[str, Any]:
+        from eve.integrations.chrome import list_chrome_profiles
+
+        profiles = list_chrome_profiles()
+        return {"profiles": profiles}
+
+    @app.post("/api/integrations/meet/launch", dependencies=auth)
+    def launch_meet(body: MeetLaunchIn, request: Request) -> dict[str, Any]:
+        check_rate_limit(request)
+        from eve.integrations.chrome import launch_meet_in_chrome
+
+        res = launch_meet_in_chrome(body.meet_url_or_code, body.email_or_profile)
+        if body.auto_record and request.app.state.manager:
+            try:
+                session = request.app.state.manager.start(
+                    title=f"Google Meet ({res.get('email', 'Class')})",
+                    consent_confirmed=True,
+                )
+                res["session_id"] = session.id
+                res["recording"] = True
+            except Exception as exc:
+                log.warning("Auto-recording Google Meet session failed: %s", exc)
+                res["recording_error"] = str(exc)
+        return res
+
+    @app.post("/api/integrations/apps/launch", dependencies=auth)
+    def launch_desktop_app(body: AppLaunchIn, request: Request) -> dict[str, Any]:
+        check_rate_limit(request)
+        return request.app.state.assistant._tool_open_computer_app({"app_name": body.app_name})
+
+    @app.get("/api/mcp/servers", dependencies=auth)
+    def list_mcp_servers(request: Request) -> dict[str, Any]:
+        servers = request.app.state.mcp.list_servers()
+        return {"servers": servers}
+
+    @app.post("/api/mcp/servers", dependencies=auth)
+    def save_mcp_server(body: dict[str, Any], request: Request) -> dict[str, Any]:
+        check_rate_limit(request)
+        from eve.mcp.models import MCPServerConfig
+
+        cfg = MCPServerConfig(**body)
+        success = request.app.state.mcp.save_server(cfg)
+        return {"status": "ok" if success else "error"}
+
+    @app.get("/api/mcp/tools", dependencies=auth)
+    def list_mcp_tools(request: Request) -> dict[str, Any]:
+        tools = [t.model_dump() for t in request.app.state.mcp.list_all_tools()]
+        return {"tools": tools}
+
+    @app.post("/api/mcp/call", dependencies=auth)
+    def call_mcp_tool(body: MCPCallIn, request: Request) -> dict[str, Any]:
+        check_rate_limit(request)
+        result = request.app.state.mcp.call_tool(body.tool_name, body.arguments)
+        return result.model_dump()
+
     # ---------------------------------------------------------------- WebSocket
+
     @app.websocket("/ws/live")
     async def live(ws: WebSocket) -> None:
         st = ws.app.state

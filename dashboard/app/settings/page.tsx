@@ -20,7 +20,12 @@ import {
   Bot,
   Radio,
   HardDrive,
-  Trash2
+  Trash2,
+  Eye,
+  EyeOff,
+  Zap,
+  Lock,
+  Mail
 } from "lucide-react";
 import { 
   getStatus, 
@@ -37,7 +42,12 @@ import {
   getVoiceStatus,
   triggerWakeWord,
   VoiceStatus,
-  purgeRetention
+  purgeRetention,
+  getAPIKeys,
+  updateAPIKeys,
+  SystemAPIKeys,
+  getChromeProfiles,
+  ChromeProfile
 } from "@/lib/api";
 
 export default function SettingsPage() {
@@ -47,13 +57,24 @@ export default function SettingsPage() {
   const [devices, setDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Google Integration states
+  // AI Model API Keys states
+  const [apiKeys, setApiKeys] = useState<SystemAPIKeys | null>(null);
+  const [groqInput, setGroqInput] = useState("");
+  const [geminiInput, setGeminiInput] = useState("");
+  const [showGroq, setShowGroq] = useState(false);
+  const [showGemini, setShowGemini] = useState(false);
+  const [savingKeys, setSavingKeys] = useState(false);
+  const [keysMsg, setKeysMsg] = useState<string | null>(null);
+  const [keysError, setKeysError] = useState<string | null>(null);
+
+  // Google Integration & Chrome profiles states
   const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [authCode, setAuthCode] = useState("");
   const [showCodeInput, setShowCodeInput] = useState(false);
+  const [chromeProfiles, setChromeProfiles] = useState<ChromeProfile[]>([]);
 
   // Phase 5 Voice Assistant states
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
@@ -81,16 +102,20 @@ export default function SettingsPage() {
     setLoading(true);
     setToken(getStoredToken());
     try {
-      const [s, dev, g, v] = await Promise.all([
+      const [s, dev, g, v, k, profs] = await Promise.all([
         getStatus().catch(() => null),
         getDevices().catch(() => []),
         getGoogleStatus().catch(() => null),
         getVoiceStatus().catch(() => null),
+        getAPIKeys().catch(() => null),
+        getChromeProfiles().catch(() => ({ profiles: [] })),
       ]);
       setStatus(s);
       setDevices(dev);
       setGoogleStatus(g);
       setVoiceStatus(v);
+      setApiKeys(k);
+      setChromeProfiles(profs.profiles);
     } finally {
       setLoading(false);
     }
@@ -98,7 +123,35 @@ export default function SettingsPage() {
 
   useEffect(() => {
     loadSettingsData();
+    if (typeof window !== "undefined" && window.location.search.includes("google=connected")) {
+      setSyncMsg("✓ Google account connected successfully! Google Classroom, Calendar, and Workspace MCP tools are now active.");
+      setTimeout(() => setSyncMsg(null), 8000);
+    }
   }, []);
+
+  const handleSaveKeys = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingKeys(true);
+    setKeysMsg(null);
+    setKeysError(null);
+    try {
+      const payload: { groq_api_key?: string; gemini_api_key?: string } = {};
+      if (groqInput.trim()) payload.groq_api_key = groqInput.trim();
+      if (geminiInput.trim()) payload.gemini_api_key = geminiInput.trim();
+
+      const res = await updateAPIKeys(payload);
+      setKeysMsg("✓ API Keys saved to .env and activated instantly! Models re-routed.");
+      setGroqInput("");
+      setGeminiInput("");
+      const updatedKeys = await getAPIKeys().catch(() => null);
+      setApiKeys(updatedKeys);
+      setTimeout(() => setKeysMsg(null), 5000);
+    } catch (err: any) {
+      setKeysError(err.message || "Failed to update API keys.");
+    } finally {
+      setSavingKeys(false);
+    }
+  };
 
   const handleSaveToken = (e: React.FormEvent) => {
     e.preventDefault();
@@ -108,12 +161,13 @@ export default function SettingsPage() {
     loadSettingsData();
   };
 
-  const handleConnectGoogle = async () => {
+  const handleConnectGoogle = async (loginHint?: string) => {
     setGoogleLoading(true);
     setSyncError(null);
     try {
       const { auth_url } = await getGoogleAuthUrl();
-      window.open(auth_url, "_blank");
+      const finalUrl = loginHint ? `${auth_url}&login_hint=${encodeURIComponent(loginHint)}` : auth_url;
+      window.open(finalUrl, "_blank");
       setShowCodeInput(true);
     } catch (err: any) {
       setSyncError(err.message || "Failed to initiate Google authorization.");
@@ -203,7 +257,169 @@ export default function SettingsPage() {
       </div>
 
       <div className="space-y-6">
-        {/* 1. API Token Authentication */}
+        {/* 1. AI Model API Keys (Groq & Gemini) */}
+        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-sm space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500/20 to-orange-500/20 text-amber-400 flex items-center justify-center border border-amber-500/20">
+                <Zap className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                  <span>AI Model API Keys</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    No Code Editing Needed
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Configure free cloud models directly in the app. Saved securely to your local configuration.
+                </p>
+              </div>
+            </div>
+
+            {/* Active Provider Pill */}
+            <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 w-fit">
+              <span className="text-slate-400">Active Engine:</span>
+              <span className="font-semibold text-white flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>
+                  {apiKeys?.active_provider === "groq"
+                    ? "Groq LPU (300+ tok/s)"
+                    : apiKeys?.active_provider === "gemini"
+                    ? "Gemini 2.5 Flash"
+                    : "Local RTX 4060 (Ollama 7B)"}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          {keysMsg && (
+            <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center space-x-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{keysMsg}</span>
+            </div>
+          )}
+
+          {keysError && (
+            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center space-x-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{keysError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSaveKeys} className="space-y-4">
+            {/* Groq Key Input */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <label className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Groq API Key (Ultra-Fast LPU)
+                  </label>
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                      apiKeys?.groq.configured
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-slate-800 text-slate-400"
+                    }`}
+                  >
+                    {apiKeys?.groq.configured ? "Connected" : "Optional / Not Set"}
+                  </span>
+                </div>
+                <a
+                  href="https://console.groq.com/keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-amber-400 hover:text-amber-300 font-medium flex items-center space-x-1"
+                >
+                  <span>Get Free Key</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              <div className="relative">
+                <input
+                  type={showGroq ? "text" : "password"}
+                  placeholder={apiKeys?.groq.masked ? `Current: ${apiKeys.groq.masked}` : "Paste your Groq API key (gsk_...)"}
+                  value={groqInput}
+                  onChange={(e) => setGroqInput(e.target.value)}
+                  className="w-full pl-3.5 pr-10 py-2 rounded-lg bg-slate-900 border border-slate-800 text-white placeholder-slate-500 text-xs font-mono focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGroq(!showGroq)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 p-1"
+                >
+                  {showGroq ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Powers ultra-low-latency 300+ tok/s responses for Live Copilot and voice commands with zero cost.
+              </p>
+            </div>
+
+            {/* Gemini Key Input */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <label className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
+                    Google Gemini API Key
+                  </label>
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                      apiKeys?.gemini.configured
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-slate-800 text-slate-400"
+                    }`}
+                  >
+                    {apiKeys?.gemini.configured ? "Connected" : "Optional / Not Set"}
+                  </span>
+                </div>
+                <a
+                  href="https://aistudio.google.com/app/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-sky-400 hover:text-sky-300 font-medium flex items-center space-x-1"
+                >
+                  <span>Get Free Key</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              <div className="relative">
+                <input
+                  type={showGemini ? "text" : "password"}
+                  placeholder={apiKeys?.gemini.masked ? `Current: ${apiKeys.gemini.masked}` : "Paste your Gemini API key (AIzaSy...)"}
+                  value={geminiInput}
+                  onChange={(e) => setGeminiInput(e.target.value)}
+                  className="w-full pl-3.5 pr-10 py-2 rounded-lg bg-slate-900 border border-slate-800 text-white placeholder-slate-500 text-xs font-mono focus:outline-none focus:border-sky-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGemini(!showGemini)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 p-1"
+                >
+                  {showGemini ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Used for Gemini 2.5 Flash Bisaya/Tagalog lecture re-transcription and deep study notes.
+              </p>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={savingKeys || (!groqInput.trim() && !geminiInput.trim())}
+                className="px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors flex items-center space-x-2 shadow-lg shadow-emerald-600/20"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{savingKeys ? "Saving & Activating..." : "Save & Activate API Keys"}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* 2. API Token Authentication */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
@@ -241,7 +457,7 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {/* 2. Hardware Acceleration & AI Model Status */}
+        {/* 3. Hardware Acceleration & AI Model Status */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-lg bg-teal-500/10 text-teal-400 flex items-center justify-center">
@@ -249,7 +465,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">Hardware & Models</h2>
-              <p className="text-xs text-slate-400">Local RTX 4060 CUDA STT and hybrid Gemini/Ollama LLM engine.</p>
+              <p className="text-xs text-slate-400">Local RTX 4060 CUDA STT and hybrid Groq/Gemini/Ollama LLM engine.</p>
             </div>
           </div>
 
@@ -263,14 +479,18 @@ export default function SettingsPage() {
             <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
               <div className="text-[11px] text-slate-400">Intelligence Router:</div>
               <div className="text-sm font-bold text-white font-mono">
-                {status?.has_cloud_llm ? "Gemini 2.5 Flash" : "Ollama 7B (Offline)"}
+                {apiKeys?.active_provider === "groq"
+                  ? "Groq (llama-3.3-70b)"
+                  : apiKeys?.active_provider === "gemini"
+                  ? "Gemini 2.5 Flash"
+                  : "Ollama 7B (Local Offline)"}
               </div>
               <div className="text-xs text-slate-400">Structured JSON schema output</div>
             </div>
           </div>
         </div>
 
-        {/* 3. Obsidian Vault Linkage */}
+        {/* 4. Obsidian Vault Linkage */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center">
@@ -298,7 +518,7 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* 4. Google Classroom & Calendar Integration */}
+        {/* 5. Google Classroom, Gmail & Workspace MCP Integration */}
         <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -306,9 +526,9 @@ export default function SettingsPage() {
                 <BookOpen className="w-4 h-4" />
               </div>
               <div>
-                <h2 className="text-sm font-bold text-white">Google Classroom & Calendar Integration</h2>
+                <h2 className="text-sm font-bold text-white">Google Classroom, Gmail & Workspace MCP</h2>
                 <p className="text-xs text-slate-400">
-                  Read-only coursework sync & dedicated &quot;{googleStatus?.calendar_name || "E.V.E."}&quot; calendar event publishing.
+                  Connect your student email account with 1-click. Automatically enables Workspace MCP tools.
                 </p>
               </div>
             </div>
@@ -323,6 +543,32 @@ export default function SettingsPage() {
               </span>
             </div>
           </div>
+
+          {/* Detected Chrome Accounts */}
+          {chromeProfiles.length > 0 && !googleStatus?.authenticated && (
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+              <div className="text-slate-300 font-semibold flex items-center space-x-1.5">
+                <Mail className="w-4 h-4 text-sky-400" />
+                <span>Detected Google Accounts on your PC:</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Click an email to initiate 1-click authentication:
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {chromeProfiles.filter(p => p.email.includes("@")).map((p) => (
+                  <button
+                    key={p.directory}
+                    type="button"
+                    onClick={() => handleConnectGoogle(p.email)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-sky-600/20 hover:border-sky-500/50 text-slate-200 border border-slate-800 transition-colors flex items-center space-x-2 group"
+                  >
+                    <span className="font-mono text-sky-400 group-hover:text-sky-300">{p.email}</span>
+                    <span className="text-slate-500 text-[10px]">({p.name || p.directory})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
             <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 space-y-1">
@@ -346,9 +592,9 @@ export default function SettingsPage() {
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 space-y-1">
-              <div className="text-[10px] text-slate-500 uppercase tracking-wider">Target Calendar</div>
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider">Workspace MCP Status</div>
               <div className="font-semibold text-purple-400 font-mono">
-                {googleStatus?.calendar_name || "E.V.E."} (Isolated)
+                {googleStatus?.authenticated ? "Active & Linked" : "Inactive"}
               </div>
             </div>
           </div>
@@ -357,12 +603,12 @@ export default function SettingsPage() {
             {!googleStatus?.authenticated ? (
               <button
                 type="button"
-                onClick={handleConnectGoogle}
+                onClick={() => handleConnectGoogle()}
                 disabled={googleLoading || !googleStatus?.configured}
-                className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors flex items-center space-x-1.5"
+                className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors flex items-center space-x-1.5 shadow-md shadow-sky-600/20"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>{googleLoading ? "Connecting..." : "Connect Google Account"}</span>
+                <span>{googleLoading ? "Connecting..." : "Sign in with Google"}</span>
               </button>
             ) : (
               <>
@@ -373,7 +619,7 @@ export default function SettingsPage() {
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors flex items-center space-x-1.5"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${googleLoading ? "animate-spin" : ""}`} />
-                  <span>{googleLoading ? "Syncing..." : "Sync Now"}</span>
+                  <span>{googleLoading ? "Syncing..." : "Sync Classroom & Calendar"}</span>
                 </button>
 
                 <button
@@ -388,6 +634,7 @@ export default function SettingsPage() {
               </>
             )}
           </div>
+
 
           {showCodeInput && (
             <form onSubmit={handleExchangeCode} className="p-4 rounded-xl bg-slate-950 border border-sky-500/30 space-y-2">

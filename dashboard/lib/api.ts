@@ -451,4 +451,133 @@ export async function purgeRetention(): Promise<{
   });
 }
 
+// --- Desktop Computer Control, Meet Automation & MCP Tools ---
+
+export interface ChromeProfile {
+  directory: string;
+  name: string;
+  email: string;
+  avatar_icon?: string;
+}
+
+export interface MeetLaunchResult {
+  status: string;
+  meet_url: string;
+  email: string;
+  profile_directory: string;
+  recording?: boolean;
+  session_id?: number;
+  recording_error?: string;
+}
+
+export interface MCPServerInfo {
+  name: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  description: string;
+  connected?: boolean;
+  tools?: MCPToolInfo[];
+}
+
+export interface MCPToolInfo {
+  server_name: string;
+  name: string;
+  description: string;
+  input_schema: Record<string, any>;
+}
+
+export interface MCPCallResult {
+  tool_name: string;
+  content: Array<{ type: string; text?: string; [key: string]: any }>;
+  is_error: boolean;
+}
+
+export async function getChromeProfiles(): Promise<{ profiles: ChromeProfile[] }> {
+  return fetchAPI<{ profiles: ChromeProfile[] }>("/api/integrations/chrome/profiles");
+}
+
+export async function launchGoogleMeet(
+  meet_url_or_code: string,
+  email_or_profile?: string,
+  auto_record: boolean = true
+): Promise<MeetLaunchResult> {
+  return fetchAPI<MeetLaunchResult>("/api/integrations/meet/launch", {
+    method: "POST",
+    body: JSON.stringify({
+      meet_url_or_code,
+      email_or_profile: email_or_profile || null,
+      auto_record,
+    }),
+  });
+}
+
+export async function launchDesktopApp(appName: string): Promise<{ status: string; app?: string; message?: string }> {
+  return fetchAPI<{ status: string; app?: string; message?: string }>("/api/integrations/apps/launch", {
+    method: "POST",
+    body: JSON.stringify({ app_name: appName }),
+  });
+}
+
+export async function getMCPServers(): Promise<{ servers: MCPServerInfo[] }> {
+  return fetchAPI<{ servers: MCPServerInfo[] }>("/api/mcp/servers");
+}
+
+export async function saveMCPServer(server: MCPServerInfo): Promise<{ status: string }> {
+  return fetchAPI<{ status: string }>("/api/mcp/servers", {
+    method: "POST",
+    body: JSON.stringify(server),
+  });
+}
+
+export async function getMCPTools(): Promise<{ tools: MCPToolInfo[] }> {
+  return fetchAPI<{ tools: MCPToolInfo[] }>("/api/mcp/tools");
+}
+
+export async function callMCPTool(
+  tool_name: string,
+  args: Record<string, any> = {}
+): Promise<MCPCallResult> {
+  return fetchAPI<MCPCallResult>("/api/mcp/call", {
+    method: "POST",
+    body: JSON.stringify({ tool_name, arguments: args }),
+  });
+}
+
+// --- System API Keys Management ---
+
+export interface APIKeyStatus {
+  configured: boolean;
+  masked?: string | null;
+  model: string;
+}
+
+export interface SystemAPIKeys {
+  gemini: APIKeyStatus;
+  groq: APIKeyStatus;
+  active_provider: "groq" | "gemini" | "ollama";
+  has_cloud: boolean;
+}
+
+export async function getAPIKeys(): Promise<SystemAPIKeys> {
+  return fetchAPI<SystemAPIKeys>("/api/settings/keys");
+}
+
+export async function updateAPIKeys(keys: {
+  groq_api_key?: string;
+  gemini_api_key?: string;
+}): Promise<{
+  status: string;
+  message: string;
+  groq_configured: boolean;
+  gemini_configured: boolean;
+}> {
+  return fetchAPI("/api/settings/keys", {
+    method: "POST",
+    body: JSON.stringify(keys),
+  });
+}
+
+
+
 

@@ -38,7 +38,12 @@ class Settings(BaseSettings):
     # --- server ---
     host: str = "127.0.0.1"
     port: int = 8765
-    allowed_origins: list[str] = ["http://127.0.0.1:3000", "http://localhost:3000"]
+    allowed_origins: list[str] = [
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://127.0.0.1:3001",
+        "http://localhost:3001",
+    ]
 
     # --- storage ---
     data_dir: Path = PROJECT_ROOT / "data"
@@ -61,9 +66,12 @@ class Settings(BaseSettings):
     vad_max_utterance_s: float = 15.0
     vad_min_utterance_s: float = 0.4
 
-    # --- language models & intelligence (Phase 2) ---
+    # --- language models & intelligence ---
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_fast_model: str = "llama-3.1-8b-instant"
     ollama_model: str = "qwen2.5:7b"
     ollama_base_url: str = "http://127.0.0.1:11434"
     cloud_transcribe: bool = True
@@ -88,6 +96,8 @@ class Settings(BaseSettings):
     wakeword_model: str = "hey_jarvis"
     wakeword_threshold: float = 0.5
     tts_enabled: bool = True
+    tts_engine: Literal["edge-tts", "kokoro"] = "edge-tts"
+    edge_tts_voice: str = "en-PH-RosaNeural"
     tts_voice: str = "af_sarah"
     tts_speed: float = 1.0
 
@@ -134,6 +144,12 @@ class Settings(BaseSettings):
         import os
 
         return self.gemini_api_key or os.environ.get("GEMINI_API_KEY")
+
+    @property
+    def resolved_groq_api_key(self) -> str | None:
+        import os
+
+        return self.groq_api_key or os.environ.get("GROQ_API_KEY")
 
     @property
     def lectures_dir(self) -> Path:

@@ -13,7 +13,8 @@ import {
   Mic,
   Cpu,
   Sparkles,
-  GraduationCap
+  GraduationCap,
+  Terminal
 } from "lucide-react";
 import { getStatus, SystemStatus } from "@/lib/api";
 
@@ -45,9 +46,11 @@ export default function Navbar() {
     { name: "Lectures", href: "/lectures", icon: BookOpen },
     { name: "Coursework", href: "/tasks", icon: CheckSquare },
     { name: "Assignments", href: "/assignments", icon: GraduationCap },
+    { name: "Tools & MCP", href: "/tools", icon: Terminal },
     { name: "Ask E.V.E.", href: "/chat", icon: MessageSquare },
     { name: "Settings", href: "/settings", icon: SettingsIcon },
   ];
+
 
   const isRecording = Boolean(status?.active_session_id);
 

@@ -23,7 +23,7 @@ from eve.voice.tts import TTSEngine
 logger = logging.getLogger(__name__)
 
 ASSISTANT_SYSTEM_PROMPT = """You are E.V.E. (Extensible Virtual Entity), a personal local-first AI assistant for Joe, a BSIT student at USTP.
-You have access to a safe set of tools to control study workflows, track coursework, search past lectures, and quiz the student.
+You have access to a safe set of tools to control your computer, join classes, track coursework, search past lectures, and quiz the student.
 
 Available tools:
 1. start_session: Begins recording a lecture or study call. Arguments: title (string), course (string or null).
@@ -33,14 +33,16 @@ Available tools:
 5. ask_lectures: Performs hybrid RAG search across past lectures to answer study questions. Arguments: question (string).
 6. summarize_last_session: Retrieves the key points and summary from the most recent lecture. Arguments: none.
 7. quiz_me: Retrieves a practice quiz question from past lectures. Arguments: course (string or null).
-8. general_answer: Used for general conversation, explanations, greetings, or questions not requiring a system tool. Arguments: none.
+8. join_google_meet: Opens Google Meet with a specific Google account/email and automatically starts recording the instructor's lecture. Arguments: meet_url_or_code (string), email_or_profile (string or null).
+9. list_google_accounts: Lists all authenticated Google accounts and emails found in Chrome. Arguments: none.
+10. open_computer_app: Launches a desktop computer application (e.g. Obsidian, Chrome, VS Code, Terminal, Calculator). Arguments: app_name (string).
+11. general_answer: Used for general conversation, explanations, greetings, or questions not requiring a system tool. Arguments: none.
 
 Guidelines:
 - Keep your `spoken_response` brief, natural, conversational, and direct (1-3 sentences) suitable for audio playback.
+- If the user says "join my class" or "join google meet", use `join_google_meet`. If they didn't specify which email or account to join with, leave `email_or_profile` as null and your spoken response should ask them which email they'd like to join with.
 - If the user asks about lecture material, use `ask_lectures`.
 - If the user asks "what's due" or "what are my deadlines", use `list_deadlines`.
-- If the user says "start recording lecture for Web Development", use `start_session`.
-- If the user says "stop recording", use `stop_session`.
 """
 
 
@@ -53,6 +55,9 @@ class AssistantAction(BaseModel):
         "ask_lectures",
         "summarize_last_session",
         "quiz_me",
+        "join_google_meet",
+        "list_google_accounts",
+        "open_computer_app",
         "general_answer",
     ] = Field(description="The tool to execute.")
     arguments: dict[str, Any] = Field(
@@ -135,6 +140,23 @@ class VoiceAssistant:
                 tool_output = self._tool_quiz_me(action.arguments.get("course"))
                 if tool_output.get("question"):
                     final_spoken_text = f"Here is a question on {tool_output.get('course', 'your coursework')}: {tool_output['question']}"
+            elif action.tool == "join_google_meet":
+                tool_output = self._tool_join_google_meet(action.arguments)
+                if tool_output.get("status") == "clarification_needed":
+                    emails_str = ", ".join(tool_output["available_emails"][:3])
+                    final_spoken_text = f"Which email should I join with? You have {emails_str}."
+                elif tool_output.get("status") == "launched":
+                    final_spoken_text = f"Joining Google Meet with your {tool_output['email']} account and recording the class."
+            elif action.tool == "list_google_accounts":
+                tool_output = self._tool_list_google_accounts()
+                emails = [p["email"] for p in tool_output.get("profiles", []) if "@" in p["email"]]
+                final_spoken_text = f"I found {len(emails)} Google accounts: {', '.join(emails[:3])}."
+            elif action.tool == "open_computer_app":
+                tool_output = self._tool_open_computer_app(action.arguments)
+                if tool_output.get("status") == "opened":
+                    final_spoken_text = f"Opening {action.arguments.get('app_name', 'application')} on your computer."
+                else:
+                    final_spoken_text = f"Could not launch {action.arguments.get('app_name')}: {tool_output.get('message')}."
             elif action.tool == "general_answer":
                 tool_output = {"status": "ok"}
         except Exception as exc:
@@ -263,3 +285,99 @@ class VoiceAssistant:
                 "options": selected.options_json,
                 "explanation": selected.explanation,
             }
+
+    def _tool_join_google_meet(self, args: dict[str, Any]) -> dict[str, Any]:
+        from eve.integrations.chrome import launch_meet_in_chrome, list_chrome_profiles
+
+        meet_url = args.get("meet_url_or_code") or args.get("meet_url") or args.get("code") or ""
+        email = args.get("email_or_profile") or args.get("email")
+
+        profiles = list_chrome_profiles()
+        valid_emails = [p["email"] for p in profiles if "@" in p["email"]]
+
+        if not email or email.strip().lower() in ["ask", "null", "none", ""]:
+            if len(valid_emails) > 1:
+                return {
+                    "status": "clarification_needed",
+                    "meet_url": meet_url,
+                    "available_emails": valid_emails,
+                    "profiles": profiles,
+                }
+            elif valid_emails:
+                email = valid_emails[0]
+            else:
+                email = "Default"
+
+        if not meet_url:
+            return {
+                "status": "clarification_needed",
+                "email": email,
+                "available_emails": valid_emails,
+                "message": "Please provide the Google Meet URL or code to join.",
+            }
+
+        res = launch_meet_in_chrome(meet_url, email)
+        if self.session_manager:
+            try:
+                session = self.session_manager.start(
+                    title=f"Google Meet Lecture ({res.get('email', email)})",
+                    consent_confirmed=True,
+                )
+                res["session_id"] = session.id
+                res["recording"] = True
+            except Exception as exc:
+                logger.warning("Could not auto-start recording session: %s", exc)
+                res["recording_error"] = str(exc)
+
+        return res
+
+    def _tool_list_google_accounts(self) -> dict[str, Any]:
+        from eve.integrations.chrome import list_chrome_profiles
+
+        profiles = list_chrome_profiles()
+        return {"status": "ok", "profiles": profiles}
+
+    def _tool_open_computer_app(self, args: dict[str, Any]) -> dict[str, Any]:
+        import subprocess
+
+        safe_apps: dict[str, list[str]] = {
+            "chrome": ["cmd", "/c", "start", "chrome"],
+            "google chrome": ["cmd", "/c", "start", "chrome"],
+            "obsidian": ["cmd", "/c", "start", "obsidian://open"],
+            "notes": ["cmd", "/c", "start", "obsidian://open"],
+            "vscode": ["cmd", "/c", "code"],
+            "vs code": ["cmd", "/c", "code"],
+            "code": ["cmd", "/c", "code"],
+            "calculator": ["calc.exe"],
+            "calc": ["calc.exe"],
+            "notepad": ["notepad.exe"],
+            "terminal": ["wt.exe"],
+            "powershell": ["powershell.exe"],
+            "explorer": ["explorer.exe"],
+            "files": ["explorer.exe"],
+        }
+
+        app_name = str(args.get("app_name", "")).strip().lower()
+        if not app_name:
+            return {"status": "error", "message": "No application name provided."}
+
+        target_cmd = None
+        for key, cmd in safe_apps.items():
+            if key == app_name or key in app_name:
+                target_cmd = cmd
+                break
+
+        if not target_cmd:
+            available = ", ".join(sorted(set(safe_apps.keys())))
+            return {
+                "status": "error",
+                "message": f"'{app_name}' is not in the safe applications allowlist. Available: {available}",
+            }
+
+        try:
+            subprocess.Popen(target_cmd)
+            return {"status": "opened", "app": app_name}
+        except Exception as exc:
+            logger.error("Failed to open app %s: %s", app_name, exc)
+            return {"status": "error", "message": str(exc)}
+

@@ -298,3 +298,33 @@ def test_api_rate_limiting_enforcement(tmp_path: Path):
         )
         assert r3.status_code == 429
         assert "Rate limit exceeded" in r3.json()["detail"]
+
+
+def test_groq_router_structured_and_fallback(tmp_path: Path):
+    from eve.llm.router import LLMRouter
+    from pydantic import BaseModel
+
+    class SimpleSchema(BaseModel):
+        summary: str
+        tags: list[str]
+
+    # 1. When Groq client is configured, generate_structured calls Groq
+    settings = Settings(data_dir=tmp_path, groq_api_key="test_key")
+    router = LLMRouter(settings)
+
+    mock_groq = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock(message=MagicMock(content='{"summary": "Test Summary", "tags": ["it", "ustp"]}'))]
+    mock_groq.chat.completions.create.return_value = mock_resp
+    router._groq_client = mock_groq
+
+    parsed, provider = router.generate_structured(
+        "Summarize this topic", system_prompt="You are an assistant", schema=SimpleSchema
+    )
+    assert provider == "groq"
+    assert parsed.summary == "Test Summary"
+    assert parsed.tags == ["it", "ustp"]
+
+    # 2. Fast text generation
+    text = router.generate_fast_text("Quick question", system_prompt="Be concise")
+    assert "Test Summary" in text or text != ""
